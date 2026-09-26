@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Vision Cash-Up</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito+Sans:ital,wght@0,400;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <img src="assets/logo.jpg" alt="Vision Child and Youth Care Centre" class="logo">
+  <div class="topbar-right">
+    <span id="whoami" class="whoami"></span>
+    <button id="switchUserBtn" class="link-btn" hidden>Switch user</button>
+  </div>
+</header>
+
+<main id="app">
+
+  <!-- ─── AUTH / REGISTER VIEW ─────────────────────────────── -->
+  <section id="view-auth" class="view card">
+    <h1>Charity Shop Daily Cash-Up</h1>
+    <p class="muted">Enter your email to continue.</p>
+    <label>Email address
+      <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
+    </label>
+    <button id="authContinueBtn" class="btn-primary">Continue</button>
+
+    <div id="registerFields" hidden>
+      <p class="muted" style="margin-top:20px;">We don't recognise that email yet — please register below.</p>
+      <label>Full Name
+        <input type="text" id="regFullName">
+      </label>
+      <label>Contact Number
+        <input type="tel" id="regContact">
+      </label>
+      <label>Branch you work at
+        <select id="regBranch"></select>
+      </label>
+      <button id="registerBtn" class="btn-primary">Register</button>
+    </div>
+    <p id="authError" class="error-text"></p>
+  </section>
+
+  <!-- ─── PENDING VIEW ─────────────────────────────────────── -->
+  <section id="view-pending" class="view card" hidden>
+    <h1>Awaiting approval</h1>
+    <p>Thanks, <strong id="pendingName"></strong> — your registration has been sent to the admin team.</p>
+    <p class="muted">You'll get an email once you're approved. You can close this page and check back later.</p>
+  </section>
+
+  <!-- ─── REJECTED VIEW ────────────────────────────────────── -->
+  <section id="view-rejected" class="view card" hidden>
+    <h1>Access not approved</h1>
+    <p>Your registration wasn't approved. Please contact your manager or the admin team for more information.</p>
+  </section>
+
+  <!-- ─── MANAGER CASH-UP FORM ─────────────────────────────── -->
+  <section id="view-manager" class="view" hidden>
+    <div class="card">
+      <h1>Charity Shop Daily Cash-Up</h1>
+      <div class="grid-3">
+        <label>Branch Name
+          <input type="text" id="mBranch" readonly>
+        </label>
+        <label>Date &amp; Day
+          <input type="date" id="mDate">
+        </label>
+        <label>Cashier
+          <input type="text" id="mCasher">
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Z Reading &amp; Sales Summary</h2>
+      <div class="grid-2">
+        <label>Z Reading No. <input type="text" id="zReadingNo"></label>
+        <label>Z Reading Gross Sales (R) <input type="number" step="0.01" id="grossSales"></label>
+        <label>Overing Paid Amount (R) <input type="number" step="0.01" id="overingPaidAmount" value="0"></label>
+        <label>Cash Refunds Amount (R) <input type="number" step="0.01" id="cashRefundsAmount" value="0"></label>
+        <label>Expense Paid Amount (R) <input type="number" step="0.01" id="expensePaidAmount" value="0"></label>
+      </div>
+      <div class="total-line"><span>Total Nett Sales</span><strong id="totalNettSales">R 0.00</strong></div>
+    </div>
+
+    <div class="card">
+      <h2>Daily Donations</h2>
+      <table class="donations-table">
+        <thead><tr><th>Receipt No</th><th>Amount (R)</th><th>Receipt Date</th><th></th></tr></thead>
+        <tbody id="donationsBody"></tbody>
+      </table>
+      <button id="addDonationBtn" class="link-btn">+ Add donation</button>
+      <div class="total-line"><span>Total Donations</span><strong id="totalDonations">R 0.00</strong></div>
+    </div>
+
+    <div class="card">
+      <h2>Cash Breakdown &amp; Reconciliation</h2>
+      <div class="grid-2">
+        <label>No. of Card Sales <input type="number" id="cardSalesCount" value="0"></label>
+        <label>Total Card Sales (R) <input type="number" step="0.01" id="totalCardSales" value="0"></label>
+      </div>
+
+      <div class="denom-grid">
+        <div class="denom-col">
+          <h3>Notes</h3>
+          <div class="denom-row"><span>x R200</span><input type="number" min="0" id="r200" value="0"><span class="denom-sub" id="sub-r200">R0.00</span></div>
+          <div class="denom-row"><span>x R100</span><input type="number" min="0" id="r100" value="0"><span class="denom-sub" id="sub-r100">R0.00</span></div>
+          <div class="denom-row"><span>x R50</span><input type="number" min="0" id="r50" value="0"><span class="denom-sub" id="sub-r50">R0.00</span></div>
+          <div class="denom-row"><span>x R20</span><input type="number" min="0" id="r20" value="0"><span class="denom-sub" id="sub-r20">R0.00</span></div>
+          <div class="denom-row"><span>x R10</span><input type="number" min="0" id="r10" value="0"><span class="denom-sub" id="sub-r10">R0.00</span></div>
+        </div>
+        <div class="denom-col">
+          <h3>Coins</h3>
+          <div class="denom-row"><span>x R5</span><input type="number" min="0" id="r5" value="0"><span class="denom-sub" id="sub-r5">R0.00</span></div>
+          <div class="denom-row"><span>x R2</span><input type="number" min="0" id="r2" value="0"><span class="denom-sub" id="sub-r2">R0.00</span></div>
+          <div class="denom-row"><span>x R1</span><input type="number" min="0" id="r1" value="0"><span class="denom-sub" id="sub-r1">R0.00</span></div>
+          <div class="denom-row"><span>x 50c</span><input type="number" min="0" id="c50" value="0"><span class="denom-sub" id="sub-c50">R0.00</span></div>
+          <div class="denom-row"><span>x 20c</span><input type="number" min="0" id="c20" value="0"><span class="denom-sub" id="sub-c20">R0.00</span></div>
+          <div class="denom-row"><span>x 10c</span><input type="number" min="0" id="c10" value="0"><span class="denom-sub" id="sub-c10">R0.00</span></div>
+          <div class="denom-row"><span>x 5c</span><input type="number" min="0" id="c5" value="0"><span class="denom-sub" id="sub-c5">R0.00</span></div>
+          <div class="denom-row"><span>x 1c</span><input type="number" min="0" id="c1" value="0"><span class="denom-sub" id="sub-c1">R0.00</span></div>
+        </div>
+      </div>
+
+      <div class="total-line"><span>Total Cash Only</span><strong id="totalCashOnly">R 0.00</strong></div>
+      <div class="total-line"><span>Total Cards and Cash</span><strong id="totalCardsAndCash">R 0.00</strong></div>
+      <div class="total-line highlight"><span>Short / Over</span><strong id="shortOverAmount">R 0.00</strong></div>
+
+      <label>Float retained (kept in till for tomorrow)
+        <input type="number" step="0.01" id="floatAmount" value="0">
+      </label>
+    </div>
+
+    <div class="card">
+      <h2>Daily Sales Sheet</h2>
+      <p class="muted">Take a photo of the completed daily sales sheet (or choose one from your gallery) — it will be attached to this cash-up's PDF as a second page.</p>
+      <label>Photo of daily sales sheet
+        <input type="file" id="salesSheetInput" accept="image/*" capture="environment">
+      </label>
+      <div id="salesSheetPreviewWrap" hidden>
+        <img id="salesSheetPreview" class="sales-sheet-preview" alt="Daily sales sheet preview">
+        <button type="button" id="salesSheetRemoveBtn" class="link-btn">Remove photo</button>
+      </div>
+      <p id="salesSheetError" class="error-text"></p>
+    </div>
+
+    <div class="card">
+      <h2>Explanations &amp; Sign-off</h2>
+      <label>Overings paid out <textarea id="overingExplain"></textarea></label>
+      <label>Refunds paid out <textarea id="refundsExplain"></textarea></label>
+      <label>Expenses paid out <textarea id="expensesExplain"></textarea></label>
+      <label>Short or over <textarea id="shortOverExplain"></textarea></label>
+      <label>Manager (sign-off name) <input type="text" id="managerName"></label>
+      <button id="submitCashUpBtn" class="btn-primary btn-large">Submit Cash-Up</button>
+      <p id="submitError" class="error-text"></p>
+    </div>
+  </section>
+
+  <!-- ─── SUBMITTED CONFIRMATION ───────────────────────────── -->
+  <section id="view-submitted" class="view card" hidden>
+    <h1>✓ Submitted</h1>
+    <p>Your cash-up has been recorded and a PDF has been emailed to the back office team.</p>
+    <p class="muted" id="submittedRef"></p>
+    <button id="newCashUpBtn" class="btn-primary">Start a new Cash-Up</button>
+  </section>
+
+  <!-- ─── ADMIN VIEW ───────────────────────────────────────── -->
+  <section id="view-admin" class="view card" hidden>
+    <h1>Admin</h1>
+    <div class="admin-tabs">
+      <button class="tab-btn active" data-tab="approvals">Approvals</button>
+      <button class="tab-btn" data-tab="submissions">Submissions</button>
+      <button class="tab-btn" data-tab="dashboard">Dashboard</button>
+    </div>
+
+    <div id="admin-tab-approvals" class="admin-tab-panel">
+      <div id="pendingList"></div>
+      <p id="noPending" class="muted" hidden>No pending registrations right now.</p>
+    </div>
+
+    <div id="admin-tab-submissions" class="admin-tab-panel" hidden>
+      <p class="muted">Every cash-up submitted by any branch, most recent first.</p>
+      <div id="adminRecentList"></div>
+    </div>
+
+    <div id="admin-tab-dashboard" class="admin-tab-panel" hidden>
+      <div class="dash-grid">
+        <div class="dash-card">
+          <h3>This Week</h3>
+          <div class="dash-stat"><span>Submissions</span><strong id="dashWeekCount">0</strong></div>
+          <div class="dash-stat"><span>Total Nett Sales</span><strong id="dashWeekNett">R 0.00</strong></div>
+          <div class="dash-stat"><span>Total Cards &amp; Cash</span><strong id="dashWeekCards">R 0.00</strong></div>
+          <div class="dash-stat"><span>Total Donations</span><strong id="dashWeekDonations">R 0.00</strong></div>
+          <div class="dash-stat"><span>Total Short/Over</span><strong id="dashWeekShortOver">R 0.00</strong></div>
+        </div>
+        <div class="dash-card">
+          <h3>This Month</h3>
+          <div class="dash-stat"><span>Submissions</span><strong id="dashMonthCount">0</strong></div>
+          <div class="dash-stat"><span>Total Nett Sales</span><strong id="dashMonthNett">R 0.00</strong></div>
+          <div class="dash-stat"><span>Total Cards &amp; Cash</span><strong id="dashMonthCards">R 0.00</strong></div>
+          <div class="dash-stat"><span>Total Donations</span><strong id="dashMonthDonations">R 0.00</strong></div>
+          <div class="dash-stat"><span>Total Short/Over</span><strong id="dashMonthShortOver">R 0.00</strong></div>
+        </div>
+      </div>
+      <h3 style="margin-top:20px;">This Month by Branch</h3>
+      <table class="donations-table">
+        <thead><tr><th>Branch</th><th>Submissions</th><th>Total Nett Sales</th><th>Donations</th></tr></thead>
+        <tbody id="dashByBranchBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ─── BACK OFFICE VIEW ─────────────────────────────────── -->
+  <section id="view-backoffice" class="view card" hidden>
+    <h1>Back Office</h1>
+    <p class="muted">You'll receive an emailed PDF automatically whenever any branch submits a cash-up. Recent submissions:</p>
+    <div id="recentList"></div>
+  </section>
+
+  <!-- ─── LOADING ───────────────────────────────────────────── -->
+  <section id="view-loading" class="view card">
+    <p class="muted">Loading…</p>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
