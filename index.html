@@ -189,29 +189,113 @@
     </div>
 
     <div id="admin-tab-dashboard" class="admin-tab-panel" hidden>
-      <div class="dash-grid">
-        <div class="dash-card">
-          <h3>This Week</h3>
-          <div class="dash-stat"><span>Submissions</span><strong id="dashWeekCount">0</strong></div>
-          <div class="dash-stat"><span>Total Nett Sales</span><strong id="dashWeekNett">R 0.00</strong></div>
-          <div class="dash-stat"><span>Total Cards &amp; Cash</span><strong id="dashWeekCards">R 0.00</strong></div>
-          <div class="dash-stat"><span>Total Donations</span><strong id="dashWeekDonations">R 0.00</strong></div>
-          <div class="dash-stat"><span>Total Short/Over</span><strong id="dashWeekShortOver">R 0.00</strong></div>
-        </div>
-        <div class="dash-card">
-          <h3>This Month</h3>
-          <div class="dash-stat"><span>Submissions</span><strong id="dashMonthCount">0</strong></div>
-          <div class="dash-stat"><span>Total Nett Sales</span><strong id="dashMonthNett">R 0.00</strong></div>
-          <div class="dash-stat"><span>Total Cards &amp; Cash</span><strong id="dashMonthCards">R 0.00</strong></div>
-          <div class="dash-stat"><span>Total Donations</span><strong id="dashMonthDonations">R 0.00</strong></div>
-          <div class="dash-stat"><span>Total Short/Over</span><strong id="dashMonthShortOver">R 0.00</strong></div>
-        </div>
+
+      <!-- Filter bar -->
+      <div class="dash-filterbar">
+        <label class="dash-filter-field">
+          <span>Period</span>
+          <select id="dashPeriod">
+            <option value="thisWeek">This Week</option>
+            <option value="thisMonth" selected>This Month</option>
+            <option value="lastMonth">Last Month</option>
+            <option value="last3Months">Last 3 Months</option>
+            <option value="last6Months">Last 6 Months</option>
+            <option value="thisYear">This Year</option>
+            <option value="lastYear">Last Year</option>
+            <option value="custom">Custom Date Range</option>
+          </select>
+        </label>
+        <label class="dash-filter-field">
+          <span>Branch</span>
+          <select id="dashBranch"><option value="All Branches">All Branches</option></select>
+        </label>
+        <label class="dash-filter-field" id="dashFromWrap" hidden>
+          <span>From</span>
+          <input type="date" id="dashFrom">
+        </label>
+        <label class="dash-filter-field" id="dashToWrap" hidden>
+          <span>To</span>
+          <input type="date" id="dashTo">
+        </label>
       </div>
-      <h3 style="margin-top:20px;">This Month by Branch</h3>
-      <table class="donations-table">
-        <thead><tr><th>Branch</th><th>Submissions</th><th>Total Nett Sales</th><th>Donations</th></tr></thead>
-        <tbody id="dashByBranchBody"></tbody>
-      </table>
+      <p class="muted" id="dashRangeLabel" style="margin-top:-6px;"></p>
+
+      <div id="dashLoading" class="muted">Loading dashboard…</div>
+      <div id="dashContent" hidden>
+
+        <!-- KPI cards -->
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">Submissions</span>
+            <span class="kpi-value" id="kpiCount">0</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Nett Sales</span>
+            <span class="kpi-value" id="kpiNett">R 0.00</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Cards &amp; Cash</span>
+            <span class="kpi-value" id="kpiCards">R 0.00</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Donations</span>
+            <span class="kpi-value" id="kpiDonations">R 0.00</span>
+          </div>
+          <div class="kpi-card kpi-shortover" id="kpiShortOverCard">
+            <span class="kpi-label">Short / Over</span>
+            <span class="kpi-value" id="kpiShortOver">R 0.00</span>
+            <span class="kpi-badge" id="kpiShortOverBadge">BALANCED</span>
+          </div>
+        </div>
+
+        <!-- Nett Sales Trend -->
+        <div class="card chart-card">
+          <div class="chart-card-head">
+            <h3>Nett Sales Trend</h3>
+            <span class="muted chart-granularity" id="trendGranularityLabel"></span>
+          </div>
+          <div class="chart-wrap"><canvas id="chartNettTrend"></canvas></div>
+        </div>
+
+        <!-- Sales by Branch + Submissions Trend -->
+        <div class="dash-two-col">
+          <div class="card chart-card">
+            <h3>Sales by Branch</h3>
+            <div class="chart-wrap chart-wrap-short"><canvas id="chartByBranch"></canvas></div>
+            <table class="donations-table" style="margin-top:10px;">
+              <thead><tr><th>Branch</th><th>Submissions</th><th>Total Nett Sales</th><th>Donations</th></tr></thead>
+              <tbody id="dashByBranchBody"></tbody>
+            </table>
+          </div>
+          <div class="card chart-card">
+            <h3>Submissions Trend</h3>
+            <p class="muted" style="margin-top:-8px;font-size:12px;">Daily submissions — helps spot branches that aren't submitting consistently.</p>
+            <div class="chart-wrap chart-wrap-short"><canvas id="chartSubmissions"></canvas></div>
+          </div>
+        </div>
+
+        <!-- Cards & Cash vs Nett Sales vs Donations -->
+        <div class="card chart-card">
+          <h3>Cards &amp; Cash vs Nett Sales vs Donations</h3>
+          <p class="muted" style="margin-top:-8px;font-size:12px;">Selected period totals, compared side by side.</p>
+          <div class="chart-wrap chart-wrap-short"><canvas id="chartComparison"></canvas></div>
+        </div>
+
+        <!-- Monthly Historical Performance -->
+        <div class="card chart-card">
+          <h3>Monthly Historical Performance</h3>
+          <p class="muted" style="margin-top:-8px;font-size:12px;">Rolling last 12 months of Nett Sales<span id="monthlyHistoryBranchNote"></span> — independent of the Period filter above.</p>
+          <div class="chart-wrap"><canvas id="chartMonthlyHistory"></canvas></div>
+        </div>
+
+        <!-- Branch Performance Over Time -->
+        <div class="card chart-card">
+          <h3>Branch Performance Over Time</h3>
+          <p class="muted" style="margin-top:-8px;font-size:12px;">Nett Sales per branch across the selected period — set Branch above to "All Branches" to compare, or pick one to focus on it.</p>
+          <div class="chart-wrap"><canvas id="chartBranchOverTime"></canvas></div>
+        </div>
+
+      </div>
     </div>
   </section>
 
@@ -229,6 +313,7 @@
 
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
