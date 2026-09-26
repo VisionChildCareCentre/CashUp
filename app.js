@@ -4,9 +4,9 @@
 // users. Paste the new Web App /exec URL here after deploying it —
 // see the Apps Script project bound to the new Google Sheet.
 // ─────────────────────────────────────────────────────────────────────
-const APPS_SCRIPT_URL = 'PASTE_YOUR_NEW_APPS_SCRIPT_EXEC_URL_HERE';
+const APPS_SCRIPT_URL = '1Zk_exGOmLgrZdD-189hvNNmXxvaBiAmhb-Aylxc2zKY';
 
-const STORAGE_KEY = 'vision_cashup_email';
+const STORAGE_KEY = 'visionchildandyouthcarecentre@gmail.com';
 
 // ─────────────────────────────────────────────────────────────────────
 // API HELPERS
