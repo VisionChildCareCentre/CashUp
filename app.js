@@ -4,8 +4,7 @@
 // users. Paste the new Web App /exec URL here after deploying it —
 // see the Apps Script project bound to the new Google Sheet.
 // ─────────────────────────────────────────────────────────────────────
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwL0yLduCoItYz-g5XF8I0NZUmIsSfio5O2x3ivumSS4KXFpOW0QFBlH8-tpWiXHFNq/exec
-';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwL0yLduCoItYz-g5XF8I0NZUmIsSfio5O2x3ivumSS4KXFpOW0QFBlH8-tpWiXHFNq/exec';
 
 const STORAGE_KEY = 'visionchildandyouthcarecentre@gmail.com';
 
