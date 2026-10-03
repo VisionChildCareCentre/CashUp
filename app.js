@@ -642,6 +642,10 @@ function renderByBranchChart(byBranch) {
     },
     options: baseChartOptions({
       indexAxis: 'y',
+      // Horizontal bars: the nearest-item search must look along the y-axis
+      // (the category axis here), not the default x — otherwise the tooltip
+      // tracks the wrong bar until the mouse moves very slowly.
+      interaction: { mode: 'nearest', intersect: true, axis: 'y' },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -713,6 +717,9 @@ function renderComparisonChart(kpis) {
     },
     options: baseChartOptions({
       indexAxis: 'y',
+      // Horizontal bars: nearest-item search must look along the y-axis
+      // (the category axis here), not the default x.
+      interaction: { mode: 'nearest', intersect: true, axis: 'y' },
       plugins: {
         legend: { display: false },
         tooltip: {
