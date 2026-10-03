@@ -530,22 +530,24 @@ async function openShortOverModal() {
     return;
   }
 
+  const balancedNote = result.balancedCount
+    ? ' · ' + result.balancedCount + ' balanced submission' + (result.balancedCount === 1 ? '' : 's') + ' not shown'
+    : '';
   subtitle.textContent =
     formatDateOnly(result.range.from) + ' – ' + formatDateOnly(result.range.to) +
     (result.branch !== 'All Branches' ? ' · ' + result.branch : '') +
-    ' · Net ' + rand(result.totalShortOver);
+    ' · Net ' + rand(result.totalShortOver) + balancedNote;
 
   if (result.rows.length === 0) {
-    body.innerHTML = '<p class="muted">No submissions in this period.</p>';
+    body.innerHTML = '<p class="muted">Every submission in this period balanced to R 0.00 — nothing to review.</p>';
     return;
   }
 
   body.innerHTML = result.rows.map((r) => {
-    let state = 'balanced', label = 'BALANCED';
-    if (Math.abs(r.shortOverAmount) >= 0.005) {
-      state = r.shortOverAmount > 0 ? 'over' : 'short';
-      label = r.shortOverAmount > 0 ? 'OVER' : 'SHORT';
-    }
+    // Every row here is already a non-zero discrepancy (balanced rows are
+    // filtered out by the backend), so state is always over or short.
+    const state = r.shortOverAmount > 0 ? 'over' : 'short';
+    const label = r.shortOverAmount > 0 ? 'OVER' : 'SHORT';
     const explain = (r.shortOverExplain || '').trim();
     return (
       '<div class="short-over-row">' +
