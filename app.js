@@ -6,7 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwL0yLduCoItYz-g5XF8I0NZUmIsSfio5O2x3ivumSS4KXFpOW0QFBlH8-tpWiXHFNq/exec';
 
-const STORAGE_KEY = 'visionchildandyouthcarecentre@gmail.com'; // localStorage key for the logged-in user's email
+const STORAGE_KEY = 'visionchildandyouthcarecentre@gmail.com';
 
 // ─────────────────────────────────────────────────────────────────────
 // API HELPERS
@@ -696,8 +696,9 @@ function renderComparisonChart(kpis) {
   destroyChart('comparison');
   const rows = [
     { label: 'Nett Sales', value: kpis.totalNettSales, color: '#2a78d6' },
-    { label: 'Cards & Cash', value: kpis.totalCardsAndCash, color: '#eb6834' },
-    { label: 'Donations', value: kpis.totalDonations, color: '#1baf7a' }
+    { label: 'Card Sales', value: kpis.totalCardSales, color: '#eb6834' },
+    { label: 'Cash Sales', value: kpis.totalCashOnly, color: '#1baf7a' },
+    { label: 'Donations', value: kpis.totalDonations, color: '#eda100' }
   ];
   dashCharts.comparison = new Chart(ctx, {
     type: 'bar',
