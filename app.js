@@ -488,9 +488,84 @@ function initAdminDashboard(adminEmail) {
     document.getElementById('dashBranch').addEventListener('change', loadAdminDashboard);
     document.getElementById('dashFrom').addEventListener('change', loadAdminDashboard);
     document.getElementById('dashTo').addEventListener('change', loadAdminDashboard);
+
+    const shortOverCard = document.getElementById('kpiShortOverCard');
+    shortOverCard.addEventListener('click', openShortOverModal);
+    shortOverCard.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openShortOverModal(); }
+    });
+    document.getElementById('shortOverModalClose').addEventListener('click', closeShortOverModal);
+    document.getElementById('shortOverModalBackdrop').addEventListener('click', (e) => {
+      if (e.target.id === 'shortOverModalBackdrop') closeShortOverModal();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !document.getElementById('shortOverModalBackdrop').hidden) closeShortOverModal();
+    });
+
     dashInitialised = true;
   }
   loadAdminDashboard();
+}
+
+function closeShortOverModal() {
+  document.getElementById('shortOverModalBackdrop').hidden = true;
+}
+
+async function openShortOverModal() {
+  const period = document.getElementById('dashPeriod').value;
+  const branch = document.getElementById('dashBranch').value;
+  const from = document.getElementById('dashFrom').value;
+  const to = document.getElementById('dashTo').value;
+
+  const backdrop = document.getElementById('shortOverModalBackdrop');
+  const body = document.getElementById('shortOverModalBody');
+  const subtitle = document.getElementById('shortOverModalSubtitle');
+  backdrop.hidden = false;
+  body.innerHTML = '<p class="muted">Loading…</p>';
+  subtitle.textContent = '';
+
+  const result = await apiGet('shortOverDetail', { email: dashAdminEmail, period, branch, from, to });
+  if (!result.success) {
+    body.innerHTML = '<p class="error-text">' + escapeHtml(result.error || 'Could not load the breakdown.') + '</p>';
+    return;
+  }
+
+  subtitle.textContent =
+    formatDateOnly(result.range.from) + ' – ' + formatDateOnly(result.range.to) +
+    (result.branch !== 'All Branches' ? ' · ' + result.branch : '') +
+    ' · Net ' + rand(result.totalShortOver);
+
+  if (result.rows.length === 0) {
+    body.innerHTML = '<p class="muted">No submissions in this period.</p>';
+    return;
+  }
+
+  body.innerHTML = result.rows.map((r) => {
+    let state = 'balanced', label = 'BALANCED';
+    if (Math.abs(r.shortOverAmount) >= 0.005) {
+      state = r.shortOverAmount > 0 ? 'over' : 'short';
+      label = r.shortOverAmount > 0 ? 'OVER' : 'SHORT';
+    }
+    const explain = (r.shortOverExplain || '').trim();
+    return (
+      '<div class="short-over-row">' +
+        '<div class="short-over-row-head">' +
+          '<div>' +
+            '<div class="short-over-row-branch">' + escapeHtml(r.branch) + '</div>' +
+            '<div class="short-over-row-date">' + formatDateOnly(r.date) + (r.cashier ? ' · ' + escapeHtml(r.cashier) : '') + '</div>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            '<div class="short-over-row-amount state-' + state + '">' + rand(r.shortOverAmount) + '</div>' +
+            '<div class="kpi-badge" style="margin-top:4px;background:var(--status-' + (state === 'balanced' ? 'good' : state === 'over' ? 'warning' : 'critical') + ');">' + label + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="short-over-row-explain' + (explain ? '' : ' is-empty') + '">' +
+          (explain ? escapeHtml(explain) : 'No explanation recorded.') +
+        '</div>' +
+        (r.pdfUrl ? '<div style="margin-top:6px;"><a href="' + r.pdfUrl + '" target="_blank" style="font-size:12px;font-weight:700;">View PDF</a></div>' : '') +
+      '</div>'
+    );
+  }).join('');
 }
 
 function destroyChart(id) {

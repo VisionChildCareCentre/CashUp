@@ -241,10 +241,11 @@
             <span class="kpi-label">Donations</span>
             <span class="kpi-value" id="kpiDonations">R 0.00</span>
           </div>
-          <div class="kpi-card kpi-shortover" id="kpiShortOverCard">
+          <div class="kpi-card kpi-shortover kpi-clickable" id="kpiShortOverCard" role="button" tabindex="0" aria-haspopup="dialog">
             <span class="kpi-label">Short / Over</span>
             <span class="kpi-value" id="kpiShortOver">R 0.00</span>
             <span class="kpi-badge" id="kpiShortOverBadge">BALANCED</span>
+            <span class="kpi-click-hint">Click for breakdown →</span>
           </div>
         </div>
 
@@ -312,6 +313,22 @@
   </section>
 
 </main>
+
+<!-- ─── SHORT / OVER BREAKDOWN MODAL ───────────────────────── -->
+<div id="shortOverModalBackdrop" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="shortOverModalTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="shortOverModalTitle" style="margin:0;">Short / Over Breakdown</h2>
+        <p class="muted" id="shortOverModalSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="shortOverModalClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="shortOverModalBody">
+      <p class="muted">Loading…</p>
+    </div>
+  </div>
+</div>
 
 <script src="vendor/chart.umd.min.js"></script>
 <script src="app.js"></script>

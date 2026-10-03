@@ -259,3 +259,42 @@ textarea { min-height: 60px; resize: vertical; }
 @media (min-width: 960px) {
   main#app { padding: 32px 0; }
 }
+
+/* ── Short/Over breakdown (click-through) ─────────────────────────── */
+
+.kpi-clickable { cursor: pointer; transition: box-shadow .15s ease, transform .15s ease; }
+.kpi-clickable:hover, .kpi-clickable:focus-visible { box-shadow: 0 2px 4px rgba(13,83,175,0.1), 0 10px 28px rgba(13,83,175,0.14); transform: translateY(-1px); }
+.kpi-clickable:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.kpi-click-hint { font-size: 11px; font-weight: 700; color: var(--primary); white-space: nowrap; }
+@media (min-width: 640px) {
+  .kpi-click-hint { order: 99; margin-top: 2px; }
+}
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(20,33,50,0.45); z-index: 1000;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 40px 16px; overflow-y: auto;
+}
+.modal {
+  background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow-card);
+  max-width: 640px; width: 100%; padding: 20px; max-height: calc(100vh - 80px); display: flex; flex-direction: column;
+}
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px; }
+.modal-close {
+  background: none; border: none; font-size: 26px; line-height: 1; color: var(--muted); cursor: pointer; padding: 0 4px;
+}
+.modal-close:hover { color: var(--ink); }
+.modal-body { overflow-y: auto; }
+
+.short-over-row {
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+}
+.short-over-row-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.short-over-row-branch { font-weight: 700; font-size: 14px; }
+.short-over-row-date { font-size: 12px; color: var(--muted); }
+.short-over-row-amount { font-weight: 800; font-size: 15px; }
+.short-over-row-amount.state-over { color: var(--status-warning); }
+.short-over-row-amount.state-short { color: var(--status-critical); }
+.short-over-row-cashier { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.short-over-row-explain { font-size: 13px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.short-over-row-explain.is-empty { color: var(--muted); font-style: italic; }
