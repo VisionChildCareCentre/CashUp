@@ -275,6 +275,7 @@ textarea { min-height: 60px; resize: vertical; }
   display: flex; align-items: flex-start; justify-content: center;
   padding: 40px 16px; overflow-y: auto;
 }
+.modal-backdrop[hidden] { display: none; }
 .modal {
   background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow-card);
   max-width: 640px; width: 100%; padding: 20px; max-height: calc(100vh - 80px); display: flex; flex-direction: column;
