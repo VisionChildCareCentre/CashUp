@@ -17,7 +17,7 @@
 // When the shell file list changes, bump CACHE_VERSION.
 // ─────────────────────────────────────────────────────────────────────
 
-const CACHE_VERSION = 'cashup-shell-v1';
+const CACHE_VERSION = 'cashup-shell-v2';
 
 const APP_SHELL = [
   './',
@@ -28,10 +28,10 @@ const APP_SHELL = [
   'vendor/chart.umd.min.js',
   'assets/logo.jpg',
   'manifest.webmanifest',
-  'icons/icon-192.png',
-  'icons/icon-512.png',
-  'icons/icon-maskable-512.png',
-  'icons/apple-touch-icon.png'
+  'icon-192.png',
+  'icon-512.png',
+  'icon-maskable-512.png',
+  'apple-touch-icon.png'
 ];
 
 const NEVER_CACHE_HOSTS = [
