@@ -8,12 +8,25 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito+Sans:ital,wght@0,400;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+<!-- PWA / install support -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0d53af">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Cash-Up">
 </head>
 <body>
 
 <header class="topbar">
   <img src="assets/logo.jpg" alt="Vision Child and Youth Care Centre" class="logo">
   <div class="topbar-right">
+    <button id="installAppBtn" class="install-btn" type="button" hidden>
+      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1zM5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z"/></svg>
+      <span>Download App</span>
+    </button>
     <span id="whoami" class="whoami"></span>
     <button id="switchUserBtn" class="link-btn" hidden>Switch user</button>
   </div>
@@ -330,7 +343,24 @@
   </div>
 </div>
 
+<!-- ─── iPHONE "ADD TO HOME SCREEN" HINT ───────────────────── -->
+<div id="iosInstallHint" class="ios-hint-backdrop" hidden>
+  <div class="ios-hint" role="dialog" aria-modal="true" aria-labelledby="iosInstallHintTitle">
+    <button type="button" class="modal-close" id="iosInstallHintClose" aria-label="Close">&times;</button>
+    <img src="icons/apple-touch-icon.png" alt="" class="ios-hint-icon">
+    <h2 id="iosInstallHintTitle">Install Vision Cash-Up</h2>
+    <ol>
+      <li>Tap the <strong>Share</strong> button
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-label="Share icon" class="ios-share-icon"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 15V3M8 7l4-4 4 4M7 10H5v11h14V10h-2"/></svg>
+        in Safari's toolbar.</li>
+      <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
+      <li>Tap <strong>Add</strong>. Cash-Up will open from your home screen like an app.</li>
+    </ol>
+  </div>
+</div>
+
 <script src="vendor/chart.umd.min.js"></script>
 <script src="app.js"></script>
+<script src="pwa.js"></script>
 </body>
 </html>

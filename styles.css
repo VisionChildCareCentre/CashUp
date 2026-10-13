@@ -299,3 +299,43 @@ textarea { min-height: 60px; resize: vertical; }
 .short-over-row-cashier { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .short-over-row-explain { font-size: 13px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
 .short-over-row-explain.is-empty { color: var(--muted); font-style: italic; }
+
+/* ─── PWA: Download App button + iPhone install hint ─────────────── */
+.install-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--magenta); color: #fff; border: none; border-radius: 999px;
+  padding: 7px 12px; font: inherit; font-size: 13px; font-weight: 700;
+  cursor: pointer; white-space: nowrap;
+}
+.install-btn:active { background: var(--magenta-dark); }
+.install-btn[hidden] { display: none; }
+@media (max-width: 380px) {
+  .install-btn span { display: none; }   /* icon-only on very narrow phones */
+  .install-btn { padding: 8px; }
+}
+
+.ios-hint-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(20,33,50,0.45);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding: 16px;
+}
+.ios-hint-backdrop[hidden] { display: none; }
+.ios-hint {
+  position: relative; background: var(--card-bg); border-radius: var(--radius);
+  box-shadow: var(--shadow-card); width: 100%; max-width: 420px;
+  padding: 20px 20px 16px; margin-bottom: env(safe-area-inset-bottom, 0);
+}
+.ios-hint .modal-close { position: absolute; top: 10px; right: 12px; }
+.ios-hint-icon { width: 56px; height: 56px; border-radius: 12px; border: 1px solid var(--border); }
+.ios-hint h2 { margin: 10px 0 8px; font-size: 18px; }
+.ios-hint ol { margin: 0; padding-left: 20px; line-height: 1.6; font-size: 15px; }
+.ios-hint li { margin-bottom: 6px; }
+.ios-share-icon { vertical-align: -3px; color: var(--primary); }
+/* Once signed in, the topbar also holds the name + "Switch user" — keep the
+   install button icon-only on phones so nothing wraps or overflows. */
+@media (max-width: 520px) {
+  .topbar-right:has(#whoami:not(:empty)) .install-btn span { display: none; }
+  .topbar-right:has(#whoami:not(:empty)) .install-btn { padding: 8px; }
+  .topbar-right:has(.install-btn:not([hidden])) .whoami { max-width: 110px; }
+}

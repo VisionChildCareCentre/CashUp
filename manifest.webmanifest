@@ -1,0 +1,17 @@
+{
+  "id": "/CashUp/",
+  "name": "Vision Cash-Up",
+  "short_name": "Cash-Up",
+  "description": "Daily Cash-Up for Vision Child and Youth Care Centre charity shops.",
+  "start_url": "/CashUp/",
+  "scope": "/CashUp/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#0d53af",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
