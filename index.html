@@ -72,6 +72,12 @@
     <p>Your registration wasn't approved. Please contact your manager or the admin team for more information.</p>
   </section>
 
+  <!-- ─── INACTIVE VIEW (access switched off by an admin) ──── -->
+  <section id="view-inactive" class="view card" hidden>
+    <h1>Access switched off</h1>
+    <p>Your access to the Cash-Up app has been switched off. If you think this is a mistake, please contact your manager or the admin team.</p>
+  </section>
+
   <!-- ─── MANAGER CASH-UP FORM ─────────────────────────────── -->
   <section id="view-manager" class="view" hidden>
     <div class="card">
@@ -192,8 +198,52 @@
     </div>
 
     <div id="admin-tab-approvals" class="admin-tab-panel">
+      <h2>Pending requests</h2>
       <div id="pendingList"></div>
       <p id="noPending" class="muted" hidden>No pending registrations right now.</p>
+
+      <div class="users-head">
+        <h2>All users</h2>
+        <span class="muted users-count" id="usersCount"></span>
+      </div>
+      <div class="users-toolbar">
+        <label class="users-search">Search
+          <input type="search" id="usersSearch" placeholder="Name, email, contact or branch" autocomplete="off">
+        </label>
+        <label class="users-filter">Status
+          <select id="usersStatusFilter">
+            <option value="default" selected>All except Rejected</option>
+            <option value="Approved">Approved</option>
+            <option value="Pending">Pending</option>
+            <option value="Inactive">Inactive</option>
+            <option value="Rejected">Rejected</option>
+            <option value="all">Everyone (incl. Rejected)</option>
+          </select>
+        </label>
+      </div>
+      <div id="usersLoading" class="muted">Loading users…</div>
+      <p id="usersError" class="error-text" hidden></p>
+      <div class="users-table-wrap" id="usersTableWrap" hidden>
+        <table class="users-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th class="col-name">Full Name</th>
+              <th>Contact</th>
+              <th>Email</th>
+              <th>Requested Branch</th>
+              <th>Status</th>
+              <th>Role</th>
+              <th>Branch</th>
+              <th>Approved By</th>
+              <th>Approved Date</th>
+              <th><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody"></tbody>
+        </table>
+      </div>
+      <p id="usersEmpty" class="muted" hidden>No users match your search or filter.</p>
     </div>
 
     <div id="admin-tab-submissions" class="admin-tab-panel" hidden>
@@ -339,6 +389,45 @@
     </div>
     <div class="modal-body" id="shortOverModalBody">
       <p class="muted">Loading…</p>
+    </div>
+  </div>
+</div>
+
+<!-- ─── EDIT USER MODAL (Admin → Approvals → All users) ────── -->
+<div id="userEditBackdrop" class="modal-backdrop" hidden>
+  <div class="modal user-edit-modal" role="dialog" aria-modal="true" aria-labelledby="userEditTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="userEditTitle" style="margin:0;">Edit user</h2>
+        <p class="muted" id="userEditSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="userEditClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <label>Status
+        <select id="userEditStatus">
+          <option value="Approved">Approved — can use the app</option>
+          <option value="Inactive">Inactive — access switched off</option>
+          <option value="Rejected">Rejected</option>
+        </select>
+      </label>
+      <label>Role
+        <select id="userEditRole">
+          <option value="Manager">Store Manager</option>
+          <option value="BackOffice">Back Office</option>
+          <option value="Admin">Admin</option>
+        </select>
+      </label>
+      <label>Branch
+        <select id="userEditBranch"></select>
+      </label>
+      <p class="user-edit-note" id="userEditNote" hidden></p>
+      <p class="muted user-edit-meta" id="userEditMeta"></p>
+      <p class="error-text" id="userEditError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="userEditCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="userEditSave">Save changes</button>
+      </div>
     </div>
   </div>
 </div>

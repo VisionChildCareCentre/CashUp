@@ -62,7 +62,7 @@ async function fetchWithRetry(doFetch, attempts) {
 // VIEW ROUTING
 // ─────────────────────────────────────────────────────────────────────
 
-const views = ['auth', 'pending', 'rejected', 'manager', 'submitted', 'admin', 'backoffice', 'loading'];
+const views = ['auth', 'pending', 'rejected', 'inactive', 'manager', 'submitted', 'admin', 'backoffice', 'loading'];
 function showView(name) {
   views.forEach((v) => {
     document.getElementById('view-' + v).hidden = (v !== name);
@@ -119,6 +119,8 @@ async function routeForEmail(email) {
     showView('pending');
   } else if (result.status === 'Rejected') {
     showView('rejected');
+  } else if (result.status === 'Inactive') {
+    showView('inactive');
   } else if (result.status === 'Approved' && result.role === 'Manager') {
     setupManagerView(result);
     showView('manager');
@@ -451,7 +453,7 @@ function initAdminTabs(adminEmail) {
 function switchAdminTab(tab, adminEmail) {
   document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.admin-tab-panel').forEach((p) => { p.hidden = (p.id !== 'admin-tab-' + tab); });
-  document.body.classList.toggle('wide-admin', tab === 'dashboard');
+  document.body.classList.toggle('wide-admin', tab === 'dashboard' || tab === 'approvals');
 
   if (tab === 'approvals') loadAdminView(adminEmail);
   else if (tab === 'submissions') loadAdminSubmissions(adminEmail);
@@ -898,14 +900,61 @@ async function loadAdminSubmissions(adminEmail) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// ADMIN VIEW — Approvals tab: "Pending requests" + "All users"
+// ─────────────────────────────────────────────────────────────────────
+
+const ROLE_LABELS ={ Manager: 'Store Manager', BackOffice: 'Back Office', Admin: 'Admin' };
+let adminUsers = [];        // every row of the Users sheet (from 'allUsers')
+let adminUserBranches = []; // branch list for the edit dialog
+let usersAdminEmail = null;
+let usersUiInitialised = false;
+let editingUser = null;
+let adminLoadSeq = 0;       // ignores stale responses if the tab is reloaded quickly
+
 async function loadAdminView(adminEmail) {
-  const result = await apiGet('pendingUsers', { email: adminEmail });
+  usersAdminEmail = adminEmail;
+  initUsersUi();
+  const seq = ++adminLoadSeq;
+
+  document.getElementById('usersLoading').hidden = false;
+  document.getElementById('usersError').hidden = true;
+
+  const [pendingRes, usersRes] = await Promise.all([
+    apiGet('pendingUsers', { email: adminEmail }),
+    apiGet('allUsers', { email: adminEmail })
+  ]);
+  if (seq !== adminLoadSeq) return;
+
+  renderPendingRequests(pendingRes, adminEmail);
+
+  document.getElementById('usersLoading').hidden = true;
+  if (!usersRes.success) {
+    const err = document.getElementById('usersError');
+    err.textContent = usersRes.error === 'Unknown action'
+      ? 'The "All users" list needs the updated Apps Script. Redeploy it (Manage deployments → Edit → New version), then refresh.'
+      : (usersRes.error || 'Could not load users.');
+    err.hidden = false;
+    document.getElementById('usersTableWrap').hidden = true;
+    document.getElementById('usersEmpty').hidden = true;
+    document.getElementById('usersCount').textContent = '';
+    return;
+  }
+  adminUsers = usersRes.users || [];
+  adminUserBranches = usersRes.branches || [];
+  renderUsersTable();
+}
+
+// Pending requests — same Approve / Reject behaviour as before; after an
+// action the whole tab reloads so the "All users" table updates too.
+function renderPendingRequests(result, adminEmail) {
   const listEl = document.getElementById('pendingList');
   const noneEl = document.getElementById('noPending');
   listEl.innerHTML = '';
 
   if (!result.success) {
-    listEl.innerHTML = '<p class="error-text">' + result.error + '</p>';
+    noneEl.hidden = true;
+    listEl.innerHTML = '<p class="error-text">' + escapeHtml(result.error) + '</p>';
     return;
   }
   if (result.pending.length === 0) {
@@ -918,11 +967,11 @@ async function loadAdminView(adminEmail) {
     const div = document.createElement('div');
     div.className = 'pending-row';
     const branchOptions = result.branches.map((b) =>
-      '<option value="' + b + '"' + (b === p.requestedBranch ? ' selected' : '') + '>' + b + '</option>'
+      '<option value="' + escapeAttr(b) + '"' + (b === p.requestedBranch ? ' selected' : '') + '>' + escapeHtml(b) + '</option>'
     ).join('');
     div.innerHTML =
       '<div class="name">' + escapeHtml(p.fullName) + '</div>' +
-      '<div class="muted">' + escapeHtml(p.contact) + ' · ' + escapeHtml(p.email) + '</div>' +
+      '<div class="muted">' + escapeHtml(formatContact(p.contact)) + ' · ' + escapeHtml(p.email) + '</div>' +
       '<div class="muted">Requested branch: ' + escapeHtml(p.requestedBranch || '—') + '</div>' +
       '<div class="pending-actions">' +
         '<select class="role-select"><option value="Manager">Store Manager</option><option value="BackOffice">Back Office</option><option value="Admin">Admin</option></select>' +
@@ -936,17 +985,227 @@ async function loadAdminView(adminEmail) {
       const branch = div.querySelector('.branch-select').value;
       div.querySelector('.btn-approve').disabled = true;
       const res = await apiPost('approveUser', { requesterEmail: adminEmail, targetEmail: p.email, role, branch });
-      if (res.success) { div.remove(); } else { alert(res.error); div.querySelector('.btn-approve').disabled = false; }
+      if (res.success) { loadAdminView(adminEmail); } else { alert(res.error); div.querySelector('.btn-approve').disabled = false; }
     });
     div.querySelector('.btn-reject').addEventListener('click', async () => {
       if (!confirm('Reject ' + p.fullName + '\'s registration?')) return;
       div.querySelector('.btn-reject').disabled = true;
       const res = await apiPost('rejectUser', { requesterEmail: adminEmail, targetEmail: p.email });
-      if (res.success) { div.remove(); } else { alert(res.error); div.querySelector('.btn-reject').disabled = false; }
+      if (res.success) { loadAdminView(adminEmail); } else { alert(res.error); div.querySelector('.btn-reject').disabled = false; }
     });
 
     listEl.appendChild(div);
   });
+}
+
+function initUsersUi() {
+  if (usersUiInitialised) return;
+  usersUiInitialised = true;
+
+  document.getElementById('usersSearch').addEventListener('input', renderUsersTable);
+  document.getElementById('usersStatusFilter').addEventListener('change', renderUsersTable);
+
+  document.getElementById('usersTableBody').addEventListener('click', (e) => {
+    const btn = e.target.closest('.user-edit-btn');
+    if (!btn) return;
+    const user = adminUsers.find((u) => sameEmail(u.email, btn.dataset.email));
+    if (user) openUserEdit(user);
+  });
+
+  document.getElementById('userEditClose').addEventListener('click', closeUserEdit);
+  document.getElementById('userEditCancel').addEventListener('click', closeUserEdit);
+  document.getElementById('userEditBackdrop').addEventListener('click', (e) => {
+    if (e.target.id === 'userEditBackdrop') closeUserEdit();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.getElementById('userEditBackdrop').hidden) closeUserEdit();
+  });
+  document.getElementById('userEditStatus').addEventListener('change', updateUserEditNote);
+  document.getElementById('userEditRole').addEventListener('change', updateUserEditNote);
+  document.getElementById('userEditSave').addEventListener('click', saveUserEdit);
+}
+
+function renderUsersTable() {
+  const filter = document.getElementById('usersStatusFilter').value;
+  const q = document.getElementById('usersSearch').value.trim().toLowerCase();
+
+  const rows = adminUsers.filter((u) => {
+    const status = u.status || '';
+    if (filter === 'default' && status === 'Rejected') return false;
+    if (filter !== 'default' && filter !== 'all' && status !== filter) return false;
+    if (!q) return true;
+    const hay = [u.fullName, u.email, formatContact(u.contact), u.requestedBranch, u.branch, ROLE_LABELS[u.role] || u.role]
+      .join(' ').toLowerCase();
+    return hay.indexOf(q) !== -1;
+  });
+
+  const body = document.getElementById('usersTableBody');
+  body.innerHTML = rows.map((u) => {
+    const isPending = u.status === 'Pending';
+    const action = isPending
+      ? '<span class="muted users-review">Review above</span>'
+      : '<button type="button" class="user-edit-btn" data-email="' + escapeAttr(u.email) + '">Edit</button>';
+    return '<tr>' +
+      '<td class="nowrap">' + dateCell(u.timestamp) + '</td>' +
+      '<td class="col-name">' + escapeHtml(u.fullName) + '</td>' +
+      '<td class="nowrap">' + escapeHtml(formatContact(u.contact)) + '</td>' +
+      '<td>' + escapeHtml(u.email) + '</td>' +
+      '<td>' + escapeHtml(u.requestedBranch || '—') + '</td>' +
+      '<td>' + statusTag(u.status) + '</td>' +
+      '<td class="nowrap">' + escapeHtml(ROLE_LABELS[u.role] || u.role || '—') + '</td>' +
+      '<td>' + escapeHtml(u.branch || '—') + '</td>' +
+      '<td>' + escapeHtml(u.approvedBy || '—') + '</td>' +
+      '<td class="nowrap">' + dateCell(u.approvedDate) + '</td>' +
+      '<td class="users-action">' + action + '</td>' +
+    '</tr>';
+  }).join('');
+
+  const total = adminUsers.length;
+  const rejectedCount = adminUsers.filter((u) => u.status === 'Rejected').length;
+  let countText = rows.length === total ? total + ' user' + (total === 1 ? '' : 's') : 'Showing ' + rows.length + ' of ' + total;
+  if (filter === 'default' && rejectedCount > 0) countText += ' · ' + rejectedCount + ' rejected hidden';
+  document.getElementById('usersCount').textContent = countText;
+
+  document.getElementById('usersTableWrap').hidden = rows.length === 0;
+  document.getElementById('usersEmpty').hidden = rows.length !== 0;
+}
+
+function statusTag(status) {
+  const s = status || 'Unknown';
+  const cls = { Approved: 'tag-approved', Pending: 'tag-pending', Rejected: 'tag-rejected', Inactive: 'tag-inactive' }[s] || 'tag-inactive';
+  return '<span class="status-tag ' + cls + '">' + escapeHtml(s) + '</span>';
+}
+
+// ── Edit dialog ──────────────────────────────────────────────────────
+
+function openUserEdit(user) {
+  editingUser = user;
+  const isSelf = sameEmail(user.email, usersAdminEmail);
+
+  document.getElementById('userEditTitle').textContent = 'Edit ' + (user.fullName || 'user');
+  document.getElementById('userEditSubtitle').textContent = user.email;
+
+  const statusSel = document.getElementById('userEditStatus');
+  statusSel.value = ['Approved', 'Inactive', 'Rejected'].indexOf(user.status) !== -1 ? user.status : 'Approved';
+  statusSel.disabled = isSelf;
+
+  const roleSel = document.getElementById('userEditRole');
+  roleSel.value = ROLE_LABELS[user.role] ? user.role : 'Manager';
+  roleSel.disabled = isSelf;
+
+  // Keep the user's current branch selectable even if it isn't in the
+  // Branches tab (e.g. "Head Office" on the first admin's row).
+  const branchSel = document.getElementById('userEditBranch');
+  const branches = adminUserBranches.slice();
+  const current = user.branch || user.requestedBranch || '';
+  if (current && branches.indexOf(current) === -1) branches.unshift(current);
+  branchSel.innerHTML = branches.map((b) =>
+    '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+  if (current) branchSel.value = current;
+
+  const meta = [];
+  if (user.approvedBy) meta.push('Approved by ' + user.approvedBy + (user.approvedDate ? ' on ' + formatShortDateTime(user.approvedDate) : ''));
+  if (user.lastEditedBy) meta.push('Last edited by ' + user.lastEditedBy + (user.lastEditedDate ? ' on ' + formatShortDateTime(user.lastEditedDate) : ''));
+  document.getElementById('userEditMeta').textContent = meta.join(' · ');
+
+  document.getElementById('userEditError').textContent = '';
+  const saveBtn = document.getElementById('userEditSave');
+  saveBtn.disabled = false;
+  saveBtn.textContent = 'Save changes';
+
+  updateUserEditNote();
+  document.getElementById('userEditBackdrop').hidden = false;
+  (isSelf ? branchSel : statusSel).focus();
+}
+
+function updateUserEditNote() {
+  if (!editingUser) return;
+  const note = document.getElementById('userEditNote');
+  const status = document.getElementById('userEditStatus').value;
+  const role = document.getElementById('userEditRole').value;
+  let text = '';
+  if (sameEmail(editingUser.email, usersAdminEmail)) {
+    text = 'This is your own account. You can change your branch, but not your own status or role.';
+  } else if (status === 'Inactive') {
+    text = 'They won\'t be able to use the app or receive cash-up emails. Their role and branch are kept, so you can switch them back on later.';
+  } else if (status === 'Approved' && editingUser.status !== 'Approved') {
+    text = 'This switches their access back on and emails them to say they\'re approved.';
+  } else if (status === 'Approved' && role !== editingUser.role) {
+    text = 'The new role applies the next time they open the app.';
+  }
+  note.textContent = text;
+  note.hidden = !text;
+}
+
+function closeUserEdit() {
+  document.getElementById('userEditBackdrop').hidden = true;
+  editingUser = null;
+}
+
+async function saveUserEdit() {
+  if (!editingUser) return;
+  const saveBtn = document.getElementById('userEditSave');
+  const errEl = document.getElementById('userEditError');
+  errEl.textContent = '';
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+
+  const res = await apiPost('updateUser', {
+    requesterEmail: usersAdminEmail,
+    targetEmail: editingUser.email,
+    status: document.getElementById('userEditStatus').value,
+    role: document.getElementById('userEditRole').value,
+    branch: document.getElementById('userEditBranch').value
+  });
+
+  if (!res.success) {
+    errEl.textContent = res.error === 'Unknown action'
+      ? 'Editing needs the updated Apps Script. Redeploy it (Manage deployments → Edit → New version), then try again.'
+      : (res.error || 'Could not save.');
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save changes';
+    return;
+  }
+  closeUserEdit();
+  if (res.warning) alert(res.warning);
+  loadAdminView(usersAdminEmail);
+}
+
+// ── Small helpers ────────────────────────────────────────────────────
+
+function sameEmail(a, b) {
+  return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+}
+
+function escapeAttr(str) {
+  return escapeHtml(str).replace(/"/g, '&quot;');
+}
+
+// Google Sheets turns typed phone numbers like 0721234567 into the number
+// 721234567, dropping the leading zero — put it back for display.
+function formatContact(value) {
+  if (value === null || value === undefined) return '';
+  const s = String(value).trim();
+  if (/^\d{9}$/.test(s)) return '0' + s;
+  return s;
+}
+
+// Date on one line, time underneath in grey — keeps the table narrow
+// enough to fit a laptop screen without sideways scrolling.
+function dateCell(value) {
+  const full = formatShortDateTime(value);
+  if (!full) return '—';
+  const i = full.indexOf(' ');
+  if (i === -1) return escapeHtml(full);
+  return escapeHtml(full.slice(0, i)) + '<span class="cell-time">' + escapeHtml(full.slice(i + 1)) + '</span>';
+}
+
+function formatShortDateTime(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return String(value);
+  const pad = (n) => String(n).padStart(2, '0');
+  return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
 // ─────────────────────────────────────────────────────────────────────
