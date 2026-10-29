@@ -7,6 +7,14 @@
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwL0yLduCoItYz-g5XF8I0NZUmIsSfio5O2x3ivumSS4KXFpOW0QFBlH8-tpWiXHFNq/exec';
 
 const STORAGE_KEY = 'visionchildandyouthcarecentre@gmail.com';
+const DEV_TOKEN_KEY = 'cashup_dev_token'; // developer sign-in session (6 hours from last use)
+
+function getDevToken() {
+  try { return localStorage.getItem(DEV_TOKEN_KEY) || ''; } catch (e) { return ''; }
+}
+function setDevToken(token) {
+  try { if (token) localStorage.setItem(DEV_TOKEN_KEY, token); else localStorage.removeItem(DEV_TOKEN_KEY); } catch (e) { /* ignore */ }
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // API HELPERS
@@ -20,16 +28,32 @@ async function apiGet(action, params) {
   const url = new URL(APPS_SCRIPT_URL);
   url.searchParams.set('action', action);
   Object.keys(params || {}).forEach((k) => url.searchParams.set(k, params[k]));
-  return fetchWithRetry(() => fetch(url.toString()));
+  const token = getDevToken();
+  if (token) url.searchParams.set('token', token);
+  return checkDevSession(await fetchWithRetry(() => fetch(url.toString())));
 }
 
 async function apiPost(action, data) {
-  const body = JSON.stringify(Object.assign({ action: action }, data));
-  return fetchWithRetry(() => fetch(APPS_SCRIPT_URL, {
+  const payload = Object.assign({ action: action }, data);
+  const token = getDevToken();
+  if (token) payload.token = token;
+  const body = JSON.stringify(payload);
+  return checkDevSession(await fetchWithRetry(() => fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: body
-  }));
+  })));
+}
+
+// A developer's sign-in lasts 6 hours from last use. If it runs out mid-way,
+// the server answers "Not authorized" — send them back to the password screen.
+function checkDevSession(result) {
+  if (result && result.success === false && currentUser && currentUser.role === 'Developer' &&
+      /Not authorized/.test(result.error || '')) {
+    setDevToken('');
+    setTimeout(() => showDevLogin(currentUser.email, 'Your developer sign-in has expired. Please sign in again.'), 0);
+  }
+  return result;
 }
 
 // Apps Script occasionally serves a broken response (cold start, or an
@@ -62,18 +86,25 @@ async function fetchWithRetry(doFetch, attempts) {
 // VIEW ROUTING
 // ─────────────────────────────────────────────────────────────────────
 
-const views = ['auth', 'pending', 'rejected', 'inactive', 'manager', 'submitted', 'admin', 'backoffice', 'loading'];
+const views = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'manager', 'shopexp', 'submitted', 'admin',
+  'backoffice', 'deliveries', 'hoexp', 'developer', 'loading'];
+const NAVLESS_VIEWS = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'loading'];
 function showView(name) {
   views.forEach((v) => {
     document.getElementById('view-' + v).hidden = (v !== name);
   });
+  const nav = document.getElementById('appNav');
+  nav.hidden = NAVLESS_VIEWS.indexOf(name) !== -1 || nav.children.length < 2;
 }
 
 let currentUser = null; // { email, fullName, role, branch }
 
 document.getElementById('switchUserBtn').addEventListener('click', () => {
+  if (getDevToken()) { apiPost('devLogout', {}); setDevToken(''); }
   localStorage.removeItem(STORAGE_KEY);
   currentUser = null;
+  document.getElementById('appNav').innerHTML = '';
+  document.body.classList.remove('wide-admin');
   document.getElementById('whoami').textContent = '';
   document.getElementById('switchUserBtn').hidden = true;
   document.getElementById('authEmail').value = '';
@@ -109,10 +140,23 @@ async function routeForEmail(email) {
     return;
   }
 
+  if (result.needsPassword) {
+    localStorage.setItem(STORAGE_KEY, email);
+    showDevLogin(result.email || email, '');
+    return;
+  }
+
   localStorage.setItem(STORAGE_KEY, email);
   currentUser = result;
-  document.getElementById('whoami').textContent = result.fullName + ' (' + (result.role || 'pending') + ')';
+  currentUser.features = result.features || {};
+  document.getElementById('whoami').textContent = result.fullName + ' (' + (ROLE_LABELS[result.role] || result.role || 'pending') + ')';
   document.getElementById('switchUserBtn').hidden = false;
+
+  if (result.status === 'Approved' && ROLE_PAGES[result.role]) {
+    buildNav();
+    openPage(ROLE_HOME[result.role]);
+    return;
+  }
 
   if (result.status === 'Pending') {
     document.getElementById('pendingName').textContent = result.fullName;
@@ -139,6 +183,143 @@ async function routeForEmail(email) {
 function showAuthError(msg) {
   document.getElementById('authError').textContent = msg;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// ROLE TABS & FEATURE FLAGS
+// Which tabs each role gets. Tabs tied to a Pro feature only appear when
+// the Developer tab has that feature switched on (the server sends the
+// on/off list with checkUser). A role with a single tab shows no tab bar,
+// so the Standard bundle looks exactly as before.
+// ─────────────────────────────────────────────────────────────────────
+
+const PAGES = {
+  cashup:      { label: 'Daily Cash-Up' },
+  shopexp:     { label: 'Shop Expenses', feature: 'shopExpenses' },
+  approvals:   { label: 'Approvals' },
+  submissions: { label: 'Submissions' },
+  dashboard:   { label: 'Dashboard' },
+  backoffice:  { label: 'Submissions' },
+  deliveries:  { label: 'Deliveries', feature: 'deliveries' },
+  hoexp:       { label: 'Head Office Expenses', feature: 'hoExpenses' },
+  developer:   { label: 'Developer' }
+};
+const ROLE_PAGES = {
+  Manager:    ['cashup', 'shopexp', 'deliveries'],
+  BackOffice: ['backoffice', 'deliveries'],
+  Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp'],
+  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'developer']
+};
+const ROLE_HOME = { Manager: 'cashup', BackOffice: 'backoffice', Admin: 'approvals', Developer: 'approvals' };
+let currentPage = null;
+
+function featureOn(key) {
+  return !!(currentUser && currentUser.features && currentUser.features[key]);
+}
+
+function allowedPages() {
+  if (!currentUser) return [];
+  return (ROLE_PAGES[currentUser.role] || []).filter((p) => !PAGES[p].feature || featureOn(PAGES[p].feature));
+}
+
+function buildNav() {
+  const nav = document.getElementById('appNav');
+  const pages = allowedPages();
+  nav.innerHTML = pages.map((p) =>
+    '<button type="button" class="app-nav-btn" data-page="' + p + '">' + escapeHtml(PAGES[p].label) +
+    (p === 'shopexp' ? '<span class="nav-badge" id="shopExpBadge" hidden></span>' : '') + '</button>'
+  ).join('');
+  nav.querySelectorAll('.app-nav-btn').forEach((b) => b.addEventListener('click', () => openPage(b.dataset.page)));
+  // With the global tab bar in charge, the Admin card's own tab row is hidden.
+  document.querySelector('#view-admin .admin-tabs').hidden = true;
+  updateShopExpBadge();
+}
+
+function openPage(page) {
+  const pages = allowedPages();
+  if (pages.indexOf(page) === -1) page = pages[0];
+  currentPage = page;
+  document.querySelectorAll('#appNav .app-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+  const activeBtn = document.querySelector('#appNav .app-nav-btn.active');
+  if (activeBtn && activeBtn.scrollIntoView) activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (page !== 'approvals' && page !== 'dashboard') document.body.classList.remove('wide-admin');
+
+  switch (page) {
+    case 'cashup':
+      setupManagerView(currentUser);
+      showView('manager');
+      break;
+    case 'shopexp':
+      showView('shopexp');
+      break;
+    case 'approvals':
+    case 'submissions':
+    case 'dashboard':
+      showView('admin');
+      switchAdminTab(page, currentUser.email);
+      break;
+    case 'backoffice':
+      showView('backoffice');
+      loadBackOfficeView(currentUser);
+      break;
+    case 'deliveries':
+      showView('deliveries');
+      break;
+    case 'hoexp':
+      showView('hoexp');
+      break;
+    case 'developer':
+      showView('developer');
+      loadDeveloperTab();
+      break;
+  }
+  window.scrollTo(0, 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// DEVELOPER SIGN-IN
+// ─────────────────────────────────────────────────────────────────────
+
+let devLoginEmailValue = '';
+
+function showDevLogin(email, message) {
+  devLoginEmailValue = email;
+  currentUser = null;
+  document.getElementById('appNav').innerHTML = '';
+  document.body.classList.remove('wide-admin');
+  document.getElementById('devLoginEmail').textContent = email;
+  document.getElementById('devPassword').value = '';
+  document.getElementById('devLoginError').textContent = message || '';
+  document.getElementById('whoami').textContent = '';
+  document.getElementById('switchUserBtn').hidden = true;
+  showView('devlogin');
+  setTimeout(() => document.getElementById('devPassword').focus(), 50);
+}
+
+async function submitDevLogin() {
+  const btn = document.getElementById('devLoginBtn');
+  const errEl = document.getElementById('devLoginError');
+  const password = document.getElementById('devPassword').value;
+  errEl.textContent = '';
+  if (!password) { errEl.textContent = 'Enter your password.'; return; }
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  setDevToken('');
+  const res = await apiPost('devLogin', { email: devLoginEmailValue, password: password });
+  btn.disabled = false; btn.textContent = 'Sign in';
+  if (!res.success) { errEl.textContent = res.error || 'Could not sign in.'; return; }
+  setDevToken(res.token);
+  document.getElementById('devPassword').value = '';
+  await routeForEmail(devLoginEmailValue);
+}
+
+document.getElementById('devLoginBtn').addEventListener('click', submitDevLogin);
+document.getElementById('devPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitDevLogin(); });
+document.getElementById('devLoginSwitch').addEventListener('click', () => {
+  setDevToken('');
+  localStorage.removeItem(STORAGE_KEY);
+  document.getElementById('authEmail').value = '';
+  document.getElementById('registerFields').hidden = true;
+  showView('auth');
+});
 
 // ─────────────────────────────────────────────────────────────────────
 // AUTH / REGISTER VIEW
@@ -200,7 +381,19 @@ const DENOMS = [
 ];
 
 function setupManagerView(user) {
-  document.getElementById('mBranch').value = user.branch;
+  const branchInput = document.getElementById('mBranch');
+  const isDev = user.role === 'Developer';
+  document.getElementById('devCashupNote').hidden = !isDev;
+  if (isDev) {
+    // Developers test the form against a real branch of their choice.
+    branchInput.readOnly = false;
+    branchInput.setAttribute('list', 'devBranchList');
+    branchInput.placeholder = 'Choose a branch to test with';
+    if (branchInput.value === 'All branches') branchInput.value = '';
+    ensureDevBranchList();
+  } else {
+    branchInput.value = user.branch;
+  }
   if (!document.getElementById('mCasher').value) {
     document.getElementById('mCasher').value = user.fullName;
   }
@@ -209,6 +402,15 @@ function setupManagerView(user) {
   }
   document.getElementById('managerName').value = document.getElementById('managerName').value || '';
   recalcAll();
+}
+
+async function ensureDevBranchList() {
+  if (document.getElementById('devBranchList')) return;
+  const list = document.createElement('datalist');
+  list.id = 'devBranchList';
+  document.body.appendChild(list);
+  const result = await apiGet('branches', {});
+  if (result.success) list.innerHTML = result.branches.map((b) => '<option value="' + escapeAttr(b) + '"></option>').join('');
 }
 
 function num(id) { return Number(document.getElementById(id).value) || 0; }
@@ -358,6 +560,21 @@ document.getElementById('submitCashUpBtn').addEventListener('click', async () =>
     errEl.textContent = 'Manager sign-off name is required.';
     return;
   }
+  if (!document.getElementById('mBranch').value.trim()) {
+    errEl.textContent = 'Choose a branch.';
+    return;
+  }
+
+  // Shop expenses (Pro) travel with the cash-up as a separate PDF.
+  let shopExpenses = [];
+  if (featureOn('shopExpenses')) {
+    const collected = collectShopExpenses();
+    if (collected.error) {
+      errEl.textContent = collected.error + ' (see the Shop Expenses tab)';
+      return;
+    }
+    shopExpenses = collected.lines;
+  }
 
   const donations = [];
   document.querySelectorAll('#donationsBody tr').forEach((row) => {
@@ -392,6 +609,7 @@ document.getElementById('submitCashUpBtn').addEventListener('click', async () =>
     donations: donations,
     salesSheetImage: salesSheetImageDataUrl || ''
   };
+  if (shopExpenses.length) data.shopExpenses = shopExpenses;
 
   const btn = document.getElementById('submitCashUpBtn');
   btn.disabled = true; btn.textContent = 'Submitting…';
@@ -407,7 +625,9 @@ document.getElementById('submitCashUpBtn').addEventListener('click', async () =>
     return;
   }
   document.getElementById('submittedRef').textContent = 'Reference: ' + result.submissionId +
+    (shopExpenses.length ? ' · ' + shopExpenses.length + ' shop expense' + (shopExpenses.length === 1 ? '' : 's') + ' included' : '') +
     (result.pdfWarning ? ' — note: ' + result.pdfWarning : '');
+  if (shopExpenses.length) clearShopExpenses();
   showView('submitted');
 });
 
@@ -427,8 +647,160 @@ document.getElementById('newCashUpBtn').addEventListener('click', () => {
   document.getElementById('salesSheetPreviewWrap').hidden = true;
   document.getElementById('salesSheetError').textContent = '';
   recalcAll();
-  showView('manager');
+  if (currentUser && ROLE_PAGES[currentUser.role]) openPage('cashup'); else showView('manager');
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// SHOP EXPENSES (Pro feature "shopExpenses")
+// Lines are kept on the page until the cash-up is submitted; each line can
+// carry one receipt photo, compressed in the browser like the sales sheet.
+// ─────────────────────────────────────────────────────────────────────
+
+const EXPENSE_TYPES = ['Electricity', 'Repairs (Technical fees)', 'Rental', 'Utility (Water, etc)', 'Other'];
+const MAX_EXPENSE_LINES = 15;
+const expenseReceipts = new Map(); // line id -> compressed receipt data URL
+let expenseLineSeq = 0;
+
+function addExpenseLine() {
+  const container = document.getElementById('expenseLines');
+  if (container.children.length >= MAX_EXPENSE_LINES) {
+    document.getElementById('expenseError').textContent = 'A maximum of ' + MAX_EXPENSE_LINES + ' expenses can be sent with one cash-up.';
+    return;
+  }
+  const id = 'exp' + (++expenseLineSeq);
+  const defaultDate = document.getElementById('mDate').value || new Date().toISOString().slice(0, 10);
+  const div = document.createElement('div');
+  div.className = 'expense-line';
+  div.dataset.id = id;
+  div.innerHTML =
+    '<div class="expense-line-head"><strong class="expense-line-title"></strong>' +
+      '<button type="button" class="link-btn expense-remove">Remove</button></div>' +
+    '<div class="grid-2">' +
+      '<label>Date <input type="date" class="exp-date" value="' + defaultDate + '"></label>' +
+      '<label>Amount (R) <input type="number" step="0.01" min="0" class="exp-amount" inputmode="decimal"></label>' +
+    '</div>' +
+    '<label>Description <input type="text" class="exp-desc" maxlength="200" placeholder="What was paid for?"></label>' +
+    '<label>Type <select class="exp-type">' + EXPENSE_TYPES.map((t) => '<option>' + escapeHtml(t) + '</option>').join('') + '</select></label>' +
+    '<label>Receipt photo <input type="file" class="exp-file" accept="image/*" capture="environment"></label>' +
+    '<div class="exp-preview-wrap" hidden><img class="exp-preview" alt="Receipt preview">' +
+      '<button type="button" class="link-btn exp-photo-remove">Remove photo</button></div>' +
+    '<p class="error-text exp-file-error"></p>';
+
+  div.querySelector('.exp-amount').addEventListener('input', recalcShopExpenses);
+  div.querySelector('.exp-desc').addEventListener('input', updateShopExpBadge);
+  div.querySelector('.expense-remove').addEventListener('click', () => {
+    expenseReceipts.delete(id);
+    div.remove();
+    renumberExpenseLines();
+    recalcShopExpenses();
+  });
+  div.querySelector('.exp-file').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    const errEl = div.querySelector('.exp-file-error');
+    errEl.textContent = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { errEl.textContent = 'Please choose an image file.'; e.target.value = ''; return; }
+    try {
+      const dataUrl = await resizeImageFileToDataUrl(file, SALES_SHEET_MAX_DIMENSION, SALES_SHEET_JPEG_QUALITY);
+      expenseReceipts.set(id, dataUrl);
+      div.querySelector('.exp-preview').src = dataUrl;
+      div.querySelector('.exp-preview-wrap').hidden = false;
+    } catch (err) {
+      errEl.textContent = err.message || 'Could not process that photo. Please try another.';
+    }
+  });
+  div.querySelector('.exp-photo-remove').addEventListener('click', () => {
+    expenseReceipts.delete(id);
+    div.querySelector('.exp-file').value = '';
+    div.querySelector('.exp-preview-wrap').hidden = true;
+  });
+
+  container.appendChild(div);
+  renumberExpenseLines();
+  recalcShopExpenses();
+  div.querySelector('.exp-desc').focus();
+}
+
+function renumberExpenseLines() {
+  const lines = document.querySelectorAll('#expenseLines .expense-line');
+  lines.forEach((el, i) => { el.querySelector('.expense-line-title').textContent = 'Expense ' + (i + 1); });
+  document.getElementById('expenseEmpty').hidden = lines.length > 0;
+  document.getElementById('expenseError').textContent = '';
+}
+
+function recalcShopExpenses() {
+  let total = 0;
+  document.querySelectorAll('#expenseLines .exp-amount').forEach((i) => { total += Number(i.value) || 0; });
+  document.getElementById('totalShopExpenses').textContent = rand(total);
+  updateShopExpBadge();
+}
+
+function updateShopExpBadge() {
+  const badge = document.getElementById('shopExpBadge');
+  if (!badge) return;
+  const n = document.querySelectorAll('#expenseLines .expense-line').length;
+  badge.textContent = n;
+  badge.hidden = n === 0;
+}
+
+// Returns { lines } or { error }. Blank lines are skipped.
+function collectShopExpenses() {
+  const lines = [];
+  const els = document.querySelectorAll('#expenseLines .expense-line');
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i];
+    const description = el.querySelector('.exp-desc').value.trim();
+    const amount = Number(el.querySelector('.exp-amount').value) || 0;
+    const receiptImage = expenseReceipts.get(el.dataset.id) || '';
+    if (!description && !amount && !receiptImage) continue;
+    if (!description || amount <= 0) return { error: 'Shop expense ' + (i + 1) + ' needs a description and an amount.' };
+    lines.push({ date: el.querySelector('.exp-date').value, description, amount, type: el.querySelector('.exp-type').value, receiptImage });
+  }
+  return { lines };
+}
+
+function clearShopExpenses() {
+  document.getElementById('expenseLines').innerHTML = '';
+  expenseReceipts.clear();
+  renumberExpenseLines();
+  recalcShopExpenses();
+}
+
+document.getElementById('addExpenseBtn').addEventListener('click', addExpenseLine);
+
+// Shared renderer for Shop expense submissions (Admin Submissions tab and Back Office).
+async function loadExpenseSubmissions(listEl, email, branch) {
+  listEl.innerHTML = '<p class="muted">Loading…</p>';
+  const result = await apiGet('shopExpenses', { email: email, branch: branch || '' });
+  if (!result.success) { listEl.innerHTML = '<p class="error-text">' + escapeHtml(result.error) + '</p>'; return; }
+  if (!result.submissions.length) { listEl.innerHTML = '<p class="muted">No shop expenses submitted yet.</p>'; return; }
+  listEl.innerHTML = result.submissions.map((sub) =>
+    '<div class="expense-sub">' +
+      '<div class="expense-sub-head">' +
+        '<div><strong>' + escapeHtml(sub.branch) + '</strong> — cash-up ' + escapeHtml(formatDayOnly(sub.cashUpDate)) +
+          '<div class="muted expense-sub-meta">Submitted ' + escapeHtml(formatShortDateTime(sub.submittedAt)) +
+          (sub.submittedBy ? ' by ' + escapeHtml(sub.submittedBy) : '') + '</div></div>' +
+        '<div class="expense-sub-total"><strong>' + rand(sub.total) + '</strong>' +
+          (sub.pdfUrl ? '<a href="' + escapeAttr(sub.pdfUrl) + '" target="_blank" rel="noopener">PDF</a>' : '') + '</div>' +
+      '</div>' +
+      '<ul class="expense-sub-lines">' + sub.lines.map((l) =>
+        '<li><span class="exp-l-desc">' + escapeHtml(l.description) + '</span>' +
+        '<span class="exp-l-type">' + escapeHtml(l.type) + '</span>' +
+        '<span class="exp-l-amt">' + rand(l.amount) + '</span>' +
+        (l.receiptUrl ? '<a href="' + escapeAttr(l.receiptUrl) + '" target="_blank" rel="noopener">Receipt</a>' : '<span class="muted">No receipt</span>') +
+        '</li>').join('') +
+      '</ul>' +
+    '</div>'
+  ).join('');
+}
+
+function formatDayOnly(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return String(value);
+  const pad = (n) => String(n).padStart(2, '0');
+  return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear();
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // ADMIN VIEW
@@ -885,7 +1257,26 @@ function renderBranchOverTimeChart(result) {
   });
 }
 
+let adminSubSwitchBound = false;
 async function loadAdminSubmissions(adminEmail) {
+  const switchEl = document.getElementById('adminSubSwitch');
+  switchEl.hidden = !featureOn('shopExpenses');
+  if (!adminSubSwitchBound) {
+    adminSubSwitchBound = true;
+    switchEl.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+      switchEl.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+      const showExp = b.dataset.sub === 'expenses';
+      document.getElementById('adminSubCashups').hidden = showExp;
+      document.getElementById('adminSubExpenses').hidden = !showExp;
+      if (showExp) loadExpenseSubmissions(document.getElementById('adminExpenseList'), currentUser.email, '');
+    }));
+  }
+  if (switchEl.hidden) {
+    document.getElementById('adminSubCashups').hidden = false;
+    document.getElementById('adminSubExpenses').hidden = true;
+  } else if (!document.getElementById('adminSubExpenses').hidden) {
+    loadExpenseSubmissions(document.getElementById('adminExpenseList'), adminEmail, '');
+  }
   const result = await apiGet('recentSubmissions', { email: adminEmail, branch: '' });
   const listEl = document.getElementById('adminRecentList');
   listEl.innerHTML = '';
@@ -904,7 +1295,7 @@ async function loadAdminSubmissions(adminEmail) {
 // ADMIN VIEW — Approvals tab: "Pending requests" + "All users"
 // ─────────────────────────────────────────────────────────────────────
 
-const ROLE_LABELS ={ Manager: 'Store Manager', BackOffice: 'Back Office', Admin: 'Admin' };
+const ROLE_LABELS = { Manager: 'Store Manager', BackOffice: 'Back Office', Admin: 'Admin', Developer: 'Developer' };
 let adminUsers = [];        // every row of the Users sheet (from 'allUsers')
 let adminUserBranches = []; // branch list for the edit dialog
 let usersAdminEmail = null;
@@ -1089,9 +1480,14 @@ function openUserEdit(user) {
   statusSel.value = ['Approved', 'Inactive', 'Rejected'].indexOf(user.status) !== -1 ? user.status : 'Approved';
   statusSel.disabled = isSelf;
 
+  // Developer is never offered as a choice: it's only given via "Add developer",
+  // and a developer's role stays Developer.
   const roleSel = document.getElementById('userEditRole');
-  roleSel.value = ROLE_LABELS[user.role] ? user.role : 'Manager';
-  roleSel.disabled = isSelf;
+  const isDevTarget = user.role === 'Developer';
+  const roleChoices = isDevTarget ? ['Developer'] : ['Manager', 'BackOffice', 'Admin'];
+  roleSel.innerHTML = roleChoices.map((r) => '<option value="' + r + '">' + ROLE_LABELS[r] + '</option>').join('');
+  roleSel.value = roleChoices.indexOf(user.role) !== -1 ? user.role : roleChoices[0];
+  roleSel.disabled = isSelf || isDevTarget;
 
   // Keep the user's current branch selectable even if it isn't in the
   // Branches tab (e.g. "Head Office" on the first admin's row).
@@ -1126,6 +1522,8 @@ function updateUserEditNote() {
   let text = '';
   if (sameEmail(editingUser.email, usersAdminEmail)) {
     text = 'This is your own account. You can change your branch, but not your own status or role.';
+  } else if (editingUser.role === 'Developer' && status === 'Inactive') {
+    text = 'They won\'t be able to sign in as a developer. Switch them back on here at any time.';
   } else if (status === 'Inactive') {
     text = 'They won\'t be able to use the app or receive cash-up emails. Their role and branch are kept, so you can switch them back on later.';
   } else if (status === 'Approved' && editingUser.status !== 'Approved') {
@@ -1222,6 +1620,9 @@ function formatDateTime(value) {
 }
 
 async function loadBackOfficeView(user) {
+  const expSection = document.getElementById('boExpensesSection');
+  expSection.hidden = !featureOn('shopExpenses');
+  if (!expSection.hidden) loadExpenseSubmissions(document.getElementById('boExpenseList'), user.email, user.branch);
   const result = await apiGet('recentSubmissions', { email: user.email, branch: user.branch });
   const listEl = document.getElementById('recentList');
   listEl.innerHTML = '';
@@ -1234,6 +1635,167 @@ async function loadBackOfficeView(user) {
       '<span>' + (s.pdfUrl ? '<a href="' + s.pdfUrl + '" target="_blank">PDF</a>' : '') + '</span>';
     listEl.appendChild(div);
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// DEVELOPER TAB — bundle switch, Pro feature ticks, developers, password
+// ─────────────────────────────────────────────────────────────────────
+
+let devState = null;      // last devSettings response
+let devDraft = null;      // { bundle, ticks: { key: bool } } — unsaved choices
+let devUiBound = false;
+
+async function loadDeveloperTab() {
+  bindDeveloperUi();
+  const res = await apiGet('devSettings', { email: currentUser.email });
+  if (!res.success) {
+    document.getElementById('devFeatureList').innerHTML = '<p class="error-text">' + escapeHtml(res.error) + '</p>';
+    return;
+  }
+  devState = res;
+  devDraft = { bundle: res.bundle, ticks: {} };
+  res.features.forEach((f) => { devDraft.ticks[f.key] = f.ticked; });
+  renderDevSettings();
+  renderDevList(res.developers);
+  renderDevLog(res.log);
+}
+
+function bindDeveloperUi() {
+  if (devUiBound) return;
+  devUiBound = true;
+  document.querySelectorAll('.bundle-switch button').forEach((b) => b.addEventListener('click', () => {
+    if (!devDraft) return;
+    devDraft.bundle = b.dataset.bundle;
+    renderDevSettings();
+  }));
+  document.getElementById('devFeatureList').addEventListener('change', (e) => {
+    if (e.target.matches('input[type=checkbox][data-key]') && devDraft) {
+      devDraft.ticks[e.target.dataset.key] = e.target.checked;
+      renderDevSettings();
+    }
+  });
+  document.getElementById('devSaveSettings').addEventListener('click', saveDevSettingsClick);
+  document.getElementById('addDevBtn').addEventListener('click', addDeveloperClick);
+  document.getElementById('changePwBtn').addEventListener('click', changePasswordClick);
+}
+
+function devDraftChanged() {
+  if (!devState || !devDraft) return false;
+  if (devDraft.bundle !== devState.bundle) return true;
+  return devState.features.some((f) => devDraft.ticks[f.key] !== f.ticked);
+}
+
+function renderDevSettings() {
+  const pro = devDraft.bundle === 'Pro';
+  document.querySelectorAll('.bundle-switch button').forEach((b) => {
+    const on = b.dataset.bundle === devDraft.bundle;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
+  document.getElementById('bundleHint').textContent = pro
+    ? 'Pro: the ticked features below are switched on for everyone they apply to.'
+    : 'Standard: the app works exactly as the Standard Bundle. Pro features are off (your ticks are remembered for when you switch to Pro).';
+
+  document.getElementById('devFeatureList').innerHTML = devState.features.map((f) => {
+    const ticked = devDraft.ticks[f.key];
+    const willBeOn = pro && ticked;
+    return '<label class="feature-row' + (pro ? '' : ' is-disabled') + '">' +
+      '<input type="checkbox" data-key="' + escapeAttr(f.key) + '"' + (ticked ? ' checked' : '') + (pro ? '' : ' disabled') + '>' +
+      '<span class="feature-body">' +
+        '<span class="feature-name">' + escapeHtml(f.name) +
+          ' <span class="feature-tag tag-bundle">' + escapeHtml(f.bundle) + '</span>' +
+          ' <span class="feature-tag ' + (f.stage === 'Live' ? 'tag-live' : 'tag-placeholder') + '">' + escapeHtml(f.stage) + '</span>' +
+        '</span>' +
+        '<span class="feature-desc">' + escapeHtml(f.description) + '</span>' +
+      '</span>' +
+      '<span class="feature-state ' + (willBeOn ? 'on' : 'off') + '">' + (willBeOn ? 'On' : 'Off') + '</span>' +
+    '</label>';
+  }).join('');
+
+  const saveBtn = document.getElementById('devSaveSettings');
+  const changed = devDraftChanged();
+  saveBtn.disabled = !changed;
+  saveBtn.textContent = changed ? 'Save bundle settings' : 'Saved';
+}
+
+async function saveDevSettingsClick() {
+  const btn = document.getElementById('devSaveSettings');
+  const msg = document.getElementById('devSettingsMsg');
+  msg.textContent = ''; msg.className = 'dev-msg';
+  btn.disabled = true; btn.textContent = 'Saving…';
+  const res = await apiPost('saveDevSettings', { requesterEmail: currentUser.email, bundle: devDraft.bundle, features: devDraft.ticks });
+  if (!res.success) {
+    msg.textContent = res.error || 'Could not save.'; msg.className = 'dev-msg error-text';
+    btn.disabled = false; btn.textContent = 'Save bundle settings';
+    return;
+  }
+  // Refresh this developer's own tabs straight away; everyone else picks up
+  // the change the next time they open or refresh the app.
+  const pro = devDraft.bundle === 'Pro';
+  devState.features.forEach((f) => { currentUser.features[f.key] = pro && !!devDraft.ticks[f.key]; });
+  buildNav();
+  openPage('developer');
+  msg.textContent = 'Saved. Everyone else sees the change the next time they open or refresh the app.';
+  msg.className = 'dev-msg ok-text';
+}
+
+function renderDevList(devs) {
+  document.getElementById('devList').innerHTML = (devs || []).map((d) =>
+    '<div class="dev-row"><div><strong>' + escapeHtml(d.fullName) + '</strong>' +
+      (sameEmail(d.email, currentUser.email) ? ' <span class="muted">(you)</span>' : '') +
+      '<div class="muted" style="font-size:13px;">' + escapeHtml(d.email) + '</div></div>' +
+      '<div class="dev-row-tags">' + statusTag(d.status) +
+      (d.hasPassword ? '' : ' <span class="status-tag tag-pending">No password</span>') + '</div></div>'
+  ).join('') + '<p class="muted" style="font-size:13px;">To switch a developer off, use Approvals → All users → Edit.</p>';
+}
+
+function renderDevLog(log) {
+  const el = document.getElementById('devLog');
+  if (!log || !log.length) { el.innerHTML = '<p class="muted">No changes yet.</p>'; return; }
+  el.innerHTML = '<ul class="dev-log">' + log.map((l) =>
+    '<li><span class="dev-log-when">' + escapeHtml(formatShortDateTime(l.timestamp)) + '</span>' +
+    '<span>' + escapeHtml(l.change) + '</span><span class="muted">' + escapeHtml(l.email) + '</span></li>').join('') + '</ul>';
+}
+
+async function addDeveloperClick() {
+  const msg = document.getElementById('addDevMsg');
+  const btn = document.getElementById('addDevBtn');
+  msg.textContent = ''; msg.className = 'dev-msg';
+  const payload = {
+    requesterEmail: currentUser.email,
+    fullName: document.getElementById('newDevName').value.trim(),
+    email: document.getElementById('newDevEmail').value.trim(),
+    contact: document.getElementById('newDevContact').value.trim(),
+    password: document.getElementById('newDevPassword').value
+  };
+  if (!payload.fullName || !payload.email) { msg.textContent = 'Full name and email are required.'; msg.className = 'dev-msg error-text'; return; }
+  if (payload.password.length < 8) { msg.textContent = 'Temporary password must be at least 8 characters.'; msg.className = 'dev-msg error-text'; return; }
+  btn.disabled = true; btn.textContent = 'Adding…';
+  const res = await apiPost('addDeveloper', payload);
+  btn.disabled = false; btn.textContent = 'Add developer';
+  if (!res.success) { msg.textContent = res.error || 'Could not add developer.'; msg.className = 'dev-msg error-text'; return; }
+  ['newDevName', 'newDevEmail', 'newDevContact', 'newDevPassword'].forEach((id) => { document.getElementById(id).value = ''; });
+  msg.textContent = 'Developer added. Send them the app link and their temporary password privately.';
+  msg.className = 'dev-msg ok-text';
+  loadDeveloperTab();
+}
+
+async function changePasswordClick() {
+  const msg = document.getElementById('changePwMsg');
+  const btn = document.getElementById('changePwBtn');
+  msg.textContent = ''; msg.className = 'dev-msg';
+  const current = document.getElementById('pwCurrent').value;
+  const next = document.getElementById('pwNew').value;
+  const confirm = document.getElementById('pwConfirm').value;
+  if (!current || !next) { msg.textContent = 'Fill in your current and new password.'; msg.className = 'dev-msg error-text'; return; }
+  if (next.length < 8) { msg.textContent = 'New password must be at least 8 characters.'; msg.className = 'dev-msg error-text'; return; }
+  if (next !== confirm) { msg.textContent = 'The new passwords don\'t match.'; msg.className = 'dev-msg error-text'; return; }
+  btn.disabled = true; btn.textContent = 'Changing…';
+  const res = await apiPost('changeMyPassword', { requesterEmail: currentUser.email, currentPassword: current, newPassword: next });
+  btn.disabled = false; btn.textContent = 'Change password';
+  if (!res.success) { msg.textContent = res.error || 'Could not change password.'; msg.className = 'dev-msg error-text'; return; }
+  ['pwCurrent', 'pwNew', 'pwConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
+  msg.textContent = 'Password changed.'; msg.className = 'dev-msg ok-text';
 }
 
 function escapeHtml(str) {

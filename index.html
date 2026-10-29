@@ -34,6 +34,9 @@
 
 <main id="app">
 
+  <!-- ─── ROLE TAB BAR (shown only when a role has more than one tab) ─── -->
+  <nav id="appNav" class="app-nav" aria-label="Sections" hidden></nav>
+
   <!-- ─── AUTH / REGISTER VIEW ─────────────────────────────── -->
   <section id="view-auth" class="view card">
     <h1>Charity Shop Daily Cash-Up</h1>
@@ -72,6 +75,18 @@
     <p>Your registration wasn't approved. Please contact your manager or the admin team for more information.</p>
   </section>
 
+  <!-- ─── DEVELOPER SIGN-IN ────────────────────────────────── -->
+  <section id="view-devlogin" class="view card" hidden>
+    <h1>Developer sign-in</h1>
+    <p class="muted">Enter the password for <strong id="devLoginEmail"></strong>.</p>
+    <label>Password
+      <input type="password" id="devPassword" autocomplete="current-password">
+    </label>
+    <button type="button" id="devLoginBtn" class="btn-primary">Sign in</button>
+    <p id="devLoginError" class="error-text"></p>
+    <button type="button" id="devLoginSwitch" class="link-btn">Use a different email</button>
+  </section>
+
   <!-- ─── INACTIVE VIEW (access switched off by an admin) ──── -->
   <section id="view-inactive" class="view card" hidden>
     <h1>Access switched off</h1>
@@ -80,6 +95,7 @@
 
   <!-- ─── MANAGER CASH-UP FORM ─────────────────────────────── -->
   <section id="view-manager" class="view" hidden>
+    <p id="devCashupNote" class="dev-note" hidden>Developer test mode: this submits a real cash-up for the branch you choose, writes to the CashUps sheet and sends the normal emails.</p>
     <div class="card">
       <h1>Charity Shop Daily Cash-Up</h1>
       <div class="grid-3">
@@ -180,6 +196,103 @@
     </div>
   </section>
 
+  <!-- ─── SHOP EXPENSES (Pro: shopExpenses) ────────────────── -->
+  <section id="view-shopexp" class="view" hidden>
+    <div class="card">
+      <h1>Shop Expenses</h1>
+      <p class="muted">Record today's shop expenses, with a photo of each receipt. They're sent with your Daily Cash-Up when you press <strong>Submit Cash-Up</strong>, as a separate PDF. Nothing to record? Leave this empty.</p>
+      <div id="expenseLines"></div>
+      <p id="expenseEmpty" class="muted expense-empty">No expenses added for today.</p>
+      <button type="button" id="addExpenseBtn" class="link-btn">+ Add expense</button>
+      <div class="total-line"><span>Total Shop Expenses</span><strong id="totalShopExpenses">R 0.00</strong></div>
+      <p id="expenseError" class="error-text"></p>
+    </div>
+  </section>
+
+  <!-- ─── DELIVERIES / COLLECTIONS (Pro: deliveries — placeholder) ─── -->
+  <section id="view-deliveries" class="view card" hidden>
+    <h1>Delivery &amp; Collection Service</h1>
+    <p class="muted">Coming soon. This tab will track deliveries, donation collections and stock moving between branches.</p>
+    <div class="plan-grid">
+      <div class="plan-card">
+        <h3>Deliveries</h3>
+        <p>A customer buys a large item (e.g. a fridge) and asks for it to be delivered. Staff capture the customer's name, contact, address and the item.</p>
+      </div>
+      <div class="plan-card">
+        <h3>Collections</h3>
+        <p>A customer has items to donate. Staff capture the pickup details so a driver can collect them.</p>
+      </div>
+      <div class="plan-card">
+        <h3>Inter-branch transfers</h3>
+        <p>Stock that needs to move from one branch to another.</p>
+      </div>
+    </div>
+    <h2 style="margin-top:20px;">Planned flow</h2>
+    <ol class="plan-steps">
+      <li>Staff log the delivery, collection or transfer.</li>
+      <li>Head Office / Admin get an in-app notification and an email to action it.</li>
+      <li>The driver confirms in the app once it's collected and delivered.</li>
+      <li>The ticket closes.</li>
+    </ol>
+  </section>
+
+  <!-- ─── HEAD OFFICE EXPENSES (Pro: hoExpenses — placeholder) ─── -->
+  <section id="view-hoexp" class="view card" hidden>
+    <h1>Head Office Expenses</h1>
+    <p class="muted">Coming soon. This tab is only visible to Admins.</p>
+  </section>
+
+  <!-- ─── DEVELOPER (developers only) ──────────────────────── -->
+  <section id="view-developer" class="view" hidden>
+    <div class="card">
+      <h1>Developer</h1>
+      <p class="muted">Only developers can see this tab.</p>
+      <h2>Bundle</h2>
+      <div class="bundle-switch" role="radiogroup" aria-label="Bundle">
+        <button type="button" role="radio" data-bundle="Standard">Standard</button>
+        <button type="button" role="radio" data-bundle="Pro">Pro</button>
+      </div>
+      <p class="muted bundle-hint" id="bundleHint"></p>
+      <h2>Pro features</h2>
+      <div id="devFeatureList"><p class="muted">Loading…</p></div>
+      <button type="button" id="devSaveSettings" class="btn-primary dev-save">Save bundle settings</button>
+      <p id="devSettingsMsg" class="dev-msg"></p>
+    </div>
+
+    <div class="card">
+      <h2>Developers</h2>
+      <div id="devList"></div>
+      <details class="dev-add">
+        <summary>Add a developer</summary>
+        <div class="grid-2">
+          <label>Full name <input type="text" id="newDevName" autocomplete="off"></label>
+          <label>Email <input type="email" id="newDevEmail" autocomplete="off"></label>
+          <label>Contact (optional) <input type="tel" id="newDevContact" autocomplete="off"></label>
+          <label>Temporary password <input type="password" id="newDevPassword" autocomplete="new-password"></label>
+        </div>
+        <p class="muted" style="font-size:13px;margin-top:0;">At least 8 characters. Share it with them privately; they can change it here after signing in.</p>
+        <button type="button" id="addDevBtn" class="btn-primary">Add developer</button>
+        <p id="addDevMsg" class="dev-msg"></p>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Change my password</h2>
+      <div class="grid-3">
+        <label>Current password <input type="password" id="pwCurrent" autocomplete="current-password"></label>
+        <label>New password <input type="password" id="pwNew" autocomplete="new-password"></label>
+        <label>Confirm new password <input type="password" id="pwConfirm" autocomplete="new-password"></label>
+      </div>
+      <button type="button" id="changePwBtn" class="btn-primary">Change password</button>
+      <p id="changePwMsg" class="dev-msg"></p>
+    </div>
+
+    <div class="card">
+      <h2>Change log</h2>
+      <div id="devLog"><p class="muted">No changes yet.</p></div>
+    </div>
+  </section>
+
   <!-- ─── SUBMITTED CONFIRMATION ───────────────────────────── -->
   <section id="view-submitted" class="view card" hidden>
     <h1>✓ Submitted</h1>
@@ -247,8 +360,18 @@
     </div>
 
     <div id="admin-tab-submissions" class="admin-tab-panel" hidden>
-      <p class="muted">Every cash-up submitted by any branch, most recent first.</p>
-      <div id="adminRecentList"></div>
+      <div class="sub-switch" id="adminSubSwitch" hidden>
+        <button type="button" class="active" data-sub="cashups">Cash-ups</button>
+        <button type="button" data-sub="expenses">Shop expenses</button>
+      </div>
+      <div id="adminSubCashups">
+        <p class="muted">Every cash-up submitted by any branch, most recent first.</p>
+        <div id="adminRecentList"></div>
+      </div>
+      <div id="adminSubExpenses" hidden>
+        <p class="muted">Shop expenses sent with each cash-up, most recent first.</p>
+        <div id="adminExpenseList"></div>
+      </div>
     </div>
 
     <div id="admin-tab-dashboard" class="admin-tab-panel" hidden>
@@ -368,6 +491,10 @@
     <h1>Back Office</h1>
     <p class="muted">You'll receive an emailed PDF automatically whenever any branch submits a cash-up. Recent submissions:</p>
     <div id="recentList"></div>
+    <div id="boExpensesSection" hidden>
+      <h2 style="margin-top:22px;">Shop expenses</h2>
+      <div id="boExpenseList"></div>
+    </div>
   </section>
 
   <!-- ─── LOADING ───────────────────────────────────────────── -->
