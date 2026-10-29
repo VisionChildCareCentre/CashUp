@@ -223,7 +223,7 @@
   <section id="view-deliveries" class="view" hidden>
     <div class="card">
       <div class="jobs-head">
-        <h1>Deliveries &amp; Collections</h1>
+        <h1>Deliveries, Collections &amp; Transfers</h1>
         <button type="button" id="newJobBtn" class="btn-primary jobs-new-btn" hidden>+ New request</button>
       </div>
       <p class="muted" id="jobsIntro"></p>
@@ -242,6 +242,10 @@
             <option value="In Progress">In Progress</option>
             <option value="Failed Attempt">Failed Attempt</option>
             <option value="On Hold">On Hold</option>
+            <option value="Awaiting Dispatch">Awaiting Dispatch</option>
+            <option value="Dispatched">Dispatched</option>
+            <option value="Awaiting Receipt">Awaiting Receipt</option>
+            <option value="Discrepancy Reported">Discrepancy Reported</option>
             <option value="Completed">Completed</option>
             <option value="Cancelled">Cancelled</option>
             <option value="all">All jobs</option>
@@ -252,6 +256,7 @@
             <option value="">All</option>
             <option value="Delivery">Deliveries</option>
             <option value="Collection">Collections</option>
+            <option value="Transfer">Transfers</option>
           </select>
         </label>
         <label id="jobsBranchWrap" hidden>Branch
@@ -609,22 +614,33 @@
       <div class="seg" role="radiogroup" aria-label="Request type">
         <button type="button" role="radio" data-type="Delivery">Delivery</button>
         <button type="button" role="radio" data-type="Collection">Collection</button>
+        <button type="button" role="radio" data-type="Transfer">Transfer</button>
       </div>
       <p class="muted seg-hint" id="jobTypeHint"></p>
       <label id="jobBranchWrap">Branch
         <select id="jobBranch"></select>
       </label>
-      <h3 class="form-sub">Customer</h3>
-      <label>Customer name <input type="text" id="jobCustName" autocomplete="off"></label>
-      <label>Contact number <input type="tel" id="jobCustContact" autocomplete="off"></label>
-      <label>Address <textarea id="jobAddress" rows="2"></textarea></label>
-      <h3 class="form-sub">Item</h3>
-      <div class="grid-2">
+      <div id="jobCustomerSection">
+        <h3 class="form-sub">Customer</h3>
+        <label>Customer name <input type="text" id="jobCustName" autocomplete="off"></label>
+        <label>Contact number <input type="tel" id="jobCustContact" autocomplete="off"></label>
+        <label>Address <textarea id="jobAddress" rows="2"></textarea></label>
+        <h3 class="form-sub">Item</h3>
         <label>Category <select id="jobCategory"></select></label>
-        <label>Required date <input type="date" id="jobRequiredDate"></label>
+        <label>Item description <input type="text" id="jobItemDesc" placeholder="e.g. White double-door fridge" autocomplete="off"></label>
       </div>
-      <label>Item description <input type="text" id="jobItemDesc" placeholder="e.g. White double-door fridge" autocomplete="off"></label>
-      <label>Special instructions (optional) <textarea id="jobInstructions" rows="2" placeholder="e.g. Third floor, no lift. Call before arriving."></textarea></label>
+      <div id="jobTransferSection" hidden>
+        <div class="grid-2">
+          <label>From branch <select id="ibtFrom"></select></label>
+          <label>To branch <select id="ibtTo"></select></label>
+        </div>
+        <label>Reason for the transfer <textarea id="ibtReason" rows="2" placeholder="e.g. Retreat is short on winter clothing"></textarea></label>
+        <h3 class="form-sub">Items</h3>
+        <div id="ibtLines"></div>
+        <button type="button" id="ibtAddLine" class="link-btn">+ Add item</button>
+      </div>
+      <label><span id="jobDateLabel">Required date</span> <input type="date" id="jobRequiredDate"></label>
+      <label id="jobInstructionsWrap">Special instructions (optional) <textarea id="jobInstructions" rows="2" placeholder="e.g. Third floor, no lift. Call before arriving."></textarea></label>
       <p class="error-text" id="jobNewError"></p>
       <div class="user-edit-actions">
         <button type="button" class="btn-secondary" id="jobNewCancel">Cancel</button>

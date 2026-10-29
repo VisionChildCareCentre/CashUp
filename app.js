@@ -1689,7 +1689,9 @@ async function loadBackOfficeView(user) {
 const JOB_STATUS_CLASS = {
   'Pending Approval': 'js-pending', 'Approved': 'js-approved', 'Scheduled': 'js-scheduled',
   'In Progress': 'js-progress', 'Completed': 'js-done', 'Failed Attempt': 'js-failed',
-  'On Hold': 'js-hold', 'Cancelled': 'js-cancelled'
+  'On Hold': 'js-hold', 'Cancelled': 'js-cancelled',
+  'Awaiting Dispatch': 'js-awaiting', 'Dispatched': 'js-progress', 'Awaiting Receipt': 'js-scheduled',
+  'Discrepancy Reported': 'js-failed'
 };
 const JOB_FINAL = ['Completed', 'Cancelled'];
 let jobsData = null;        // last 'jobs' response
@@ -1711,7 +1713,8 @@ function localToday() {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 function todayTag(job) {
-  return job.scheduledDate === localToday() && JOB_FINAL.indexOf(job.status) === -1 ? ' <span class="status-tag js-today">Today</span>' : '';
+  const day = job.type === 'Transfer' ? (job.status === 'Dispatched' ? job.dispatchDate : '') : job.scheduledDate;
+  return day === localToday() && JOB_FINAL.indexOf(job.status) === -1 ? ' <span class="status-tag js-today">Today</span>' : '';
 }
 function dayLabel(yyyyMmDd) {
   if (!yyyyMmDd) return '';
@@ -1733,6 +1736,7 @@ function bindJobsUi() {
     if (card) openJob(card.dataset.ref);
   });
   document.getElementById('newJobBtn').addEventListener('click', openNewJob);
+  document.getElementById('ibtAddLine').addEventListener('click', addIbtLine);
   document.getElementById('jobNewClose').addEventListener('click', closeNewJob);
   document.getElementById('jobNewCancel').addEventListener('click', closeNewJob);
   document.getElementById('jobNewSubmit').addEventListener('click', submitNewJob);
@@ -1747,6 +1751,22 @@ function bindJobsUi() {
     else if (!document.getElementById('jobNewBackdrop').hidden) closeNewJob();
   });
   document.getElementById('jobBody').addEventListener('click', onJobBodyClick);
+  // Receiving a transfer: warn live about lines that will be flagged.
+  const updateIssueHint = () => {
+    const hint = document.getElementById('jaIssues');
+    if (!hint) return;
+    let n = 0;
+    document.querySelectorAll('#jobBody .ibt-receive-line').forEach((l) => {
+      const q = Number(l.querySelector('.ja-qty').value);
+      const off = q !== Number(l.dataset.sent) || l.querySelector('.ja-cond').value === 'Damaged';
+      l.classList.toggle('has-issue', off);
+      if (off) n++;
+    });
+    hint.hidden = !n;
+    hint.textContent = n + ' item line' + (n === 1 ? '' : 's') + ' will be reported as a discrepancy for Head Office to resolve.';
+  };
+  document.getElementById('jobBody').addEventListener('input', updateIssueHint);
+  document.getElementById('jobBody').addEventListener('change', updateIssueHint);
   document.getElementById('jobBody').addEventListener('change', async (e) => {
     if (e.target.id !== 'jaProof') return;
     const file = e.target.files && e.target.files[0];
@@ -1783,10 +1803,10 @@ async function loadJobs() {
   }
   jobsData = res;
   const intro = {
-    Manager: 'Delivery and collection requests for ' + res.myBranch + '. New requests go to Head Office for approval.',
-    Driver: 'Your jobs. Open one to start it, mark it completed with a photo of the signed delivery note, or record that it couldn\'t be done.',
-    BackOffice: 'All delivery and collection requests across branches (view only).'
-  }[res.role] || 'All delivery and collection requests across branches. Open a job to approve, schedule a driver, put it on hold or cancel it.';
+    Manager: 'Deliveries, collections and stock transfers for ' + res.myBranch + '. New requests go to Head Office for approval; transfers to or from your branch need you to confirm dispatch or receipt.',
+    Driver: 'Your jobs. Open one to start it, mark it completed with a photo of the signed delivery note, record that it couldn\'t be done, or mark a transfer as delivered.',
+    BackOffice: 'All deliveries, collections and transfers across branches (view only).'
+  }[res.role] || 'All deliveries, collections and transfers across branches. Open a job to approve it, schedule a driver, resolve a transfer discrepancy, put it on hold or cancel it.';
   document.getElementById('jobsIntro').textContent = intro;
   document.getElementById('newJobBtn').hidden = !res.canCreate;
 
@@ -1812,9 +1832,10 @@ function renderJobs() {
     if (status === 'overdue' && !j.overdue) return false;
     if (['open', 'overdue', 'all'].indexOf(status) === -1 && j.status !== status) return false;
     if (type && j.type !== type) return false;
-    if (branch && j.branch !== branch) return false;
+    if (branch && j.branch !== branch && j.receivingBranch !== branch) return false;
     if (q) {
-      const hay = [j.ref, j.customerName, j.customerContact, j.address, j.itemCategory, j.itemDescription, j.branch, j.driverName].join(' ').toLowerCase();
+      const hay = [j.ref, j.customerName, j.customerContact, j.address, j.itemCategory, j.itemDescription, j.branch,
+        j.receivingBranch, j.reason, j.driverName, j.responsiblePerson].join(' ').toLowerCase();
       if (hay.indexOf(q) === -1) return false;
     }
     return true;
@@ -1824,7 +1845,7 @@ function renderJobs() {
     const af = JOB_FINAL.indexOf(a.status) !== -1, bf = JOB_FINAL.indexOf(b.status) !== -1;
     if (af !== bf) return af ? 1 : -1;
     if (!af) {
-      const key = (j) => (jobsData.role === 'Driver' ? j.scheduledDate : '') || j.requiredDate || '9';
+      const key = (j) => (jobsData.role === 'Driver' ? (j.scheduledDate || j.dispatchDate) : '') || j.requiredDate || '9';
       return key(a).localeCompare(key(b)) || a.ref.localeCompare(b.ref);
     }
     return b.ref.localeCompare(a.ref);
@@ -1835,11 +1856,17 @@ function renderJobs() {
       '<span class="job-card-top"><span class="job-ref">' + escapeHtml(j.ref) + '</span>' +
         '<span class="type-tag type-' + escapeAttr(j.type.toLowerCase()) + '">' + escapeHtml(j.type) + '</span>' +
         jobStatusTag(j.status) + overdueTag(j) + todayTag(j) + '</span>' +
-      '<span class="job-card-main"><strong>' + escapeHtml(j.customerName) + '</strong> · ' +
-        escapeHtml(j.itemCategory) + ' — ' + escapeHtml(j.itemDescription) + '</span>' +
-      '<span class="job-card-meta">' + escapeHtml(j.branch) + ' · Required ' + escapeHtml(dayLabel(j.requiredDate)) +
-        (j.driverName ? ' · ' + escapeHtml(j.driverName) + (j.scheduledDate ? ' on ' + escapeHtml(dayLabel(j.scheduledDate)) : '') : '') +
-      '</span>' +
+      (j.type === 'Transfer'
+        ? '<span class="job-card-main"><strong>' + escapeHtml(j.branch) + ' → ' + escapeHtml(j.receivingBranch) + '</strong> · ' +
+            escapeHtml(j.itemDescription) + '</span>' +
+          '<span class="job-card-meta">Requested for ' + escapeHtml(dayLabel(j.requiredDate)) +
+            (j.dispatchDate ? ' · Dispatched ' + escapeHtml(dayLabel(j.dispatchDate)) + ' with ' + escapeHtml(j.driverName || j.responsiblePerson) : '') +
+          '</span>'
+        : '<span class="job-card-main"><strong>' + escapeHtml(j.customerName) + '</strong> · ' +
+            escapeHtml(j.itemCategory) + ' — ' + escapeHtml(j.itemDescription) + '</span>' +
+          '<span class="job-card-meta">' + escapeHtml(j.branch) + ' · Required ' + escapeHtml(dayLabel(j.requiredDate)) +
+            (j.driverName ? ' · ' + escapeHtml(j.driverName) + (j.scheduledDate ? ' on ' + escapeHtml(dayLabel(j.scheduledDate)) : '') : '') +
+          '</span>') +
     '</button>'
   ).join('');
 
@@ -1857,19 +1884,53 @@ function setNewJobType(type) {
     b.classList.toggle('active', b.dataset.type === type);
     b.setAttribute('aria-checked', b.dataset.type === type ? 'true' : 'false');
   });
-  document.getElementById('jobTypeHint').textContent = type === 'Delivery'
-    ? 'Taking an item bought in-store to the customer\'s address.'
-    : 'Collecting items a customer wants to donate.';
-  document.getElementById('jobNewTitle').textContent = 'New ' + type.toLowerCase() + ' request';
+  const isTransfer = type === 'Transfer';
+  document.getElementById('jobTypeHint').textContent = {
+    Delivery: 'Taking an item bought in-store to the customer\'s address.',
+    Collection: 'Collecting items a customer wants to donate.',
+    Transfer: 'Moving stock from one branch to another (inter-branch transfer).'
+  }[type];
+  document.getElementById('jobNewTitle').textContent = isTransfer ? 'New inter-branch transfer' : 'New ' + type.toLowerCase() + ' request';
+  document.getElementById('jobCustomerSection').hidden = isTransfer;
+  document.getElementById('jobInstructionsWrap').hidden = isTransfer;
+  document.getElementById('jobTransferSection').hidden = !isTransfer;
+  document.getElementById('jobBranchWrap').hidden = isTransfer || (jobsData && jobsData.role === 'Manager');
+  document.getElementById('jobDateLabel').textContent = isTransfer ? 'Requested transfer date' : 'Required date';
+  if (isTransfer && !document.querySelector('#ibtLines .ibt-line')) addIbtLine();
+}
+
+function ibtBranchOptions(selected) {
+  return '<option value="">Choose…</option>' + jobsData.branches.map((b) =>
+    '<option value="' + escapeAttr(b) + '"' + (b === selected ? ' selected' : '') + '>' + escapeHtml(b) + '</option>').join('');
+}
+
+function addIbtLine() {
+  const wrap = document.getElementById('ibtLines');
+  if (wrap.children.length >= 20) { document.getElementById('jobNewError').textContent = 'A transfer can have at most 20 item lines.'; return; }
+  const div = document.createElement('div');
+  div.className = 'ibt-line';
+  div.innerHTML =
+    '<select class="ibt-cat" aria-label="Category"><option value="">Category…</option>' +
+      jobsData.categories.map((c) => '<option>' + escapeHtml(c) + '</option>').join('') + '</select>' +
+    '<input type="text" class="ibt-desc" placeholder="Description, e.g. Winter jackets" aria-label="Description" maxlength="200">' +
+    '<input type="number" class="ibt-qty" min="1" step="1" inputmode="numeric" placeholder="Qty" aria-label="Quantity">' +
+    '<button type="button" class="row-remove ibt-remove" aria-label="Remove item">✕</button>';
+  div.querySelector('.ibt-remove').addEventListener('click', () => { div.remove(); if (!wrap.children.length) addIbtLine(); });
+  wrap.appendChild(div);
 }
 
 function openNewJob() {
   if (!jobsData) return;
   newJobRequestId = makeRequestId(); // a retry of this same form never creates a second job
-  setNewJobType('Delivery');
-  ['jobCustName', 'jobCustContact', 'jobAddress', 'jobItemDesc', 'jobInstructions', 'jobRequiredDate'].forEach((id) => {
+  ['jobCustName', 'jobCustContact', 'jobAddress', 'jobItemDesc', 'jobInstructions', 'jobRequiredDate', 'ibtReason'].forEach((id) => {
     document.getElementById(id).value = '';
   });
+  document.getElementById('ibtLines').innerHTML = '';
+  // A Store Manager's own branch is pre-filled as the receiving branch (they
+  // can swap it to sending); one of the two must be their branch.
+  const mine = jobsData.role === 'Manager' ? jobsData.myBranch : '';
+  document.getElementById('ibtFrom').innerHTML = ibtBranchOptions('');
+  document.getElementById('ibtTo').innerHTML = ibtBranchOptions(mine);
   document.getElementById('jobCategory').innerHTML = '<option value="">Choose…</option>' +
     jobsData.categories.map((c) => '<option>' + escapeHtml(c) + '</option>').join('');
   const branchWrap = document.getElementById('jobBranchWrap');
@@ -1882,6 +1943,7 @@ function openNewJob() {
       jobsData.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
   }
   document.getElementById('jobRequiredDate').min = new Date().toISOString().slice(0, 10);
+  setNewJobType('Delivery');
   document.getElementById('jobNewError').textContent = '';
   const btn = document.getElementById('jobNewSubmit');
   btn.disabled = false; btn.textContent = 'Submit for approval';
@@ -1894,6 +1956,7 @@ function closeNewJob() { document.getElementById('jobNewBackdrop').hidden = true
 async function submitNewJob() {
   const errEl = document.getElementById('jobNewError');
   const v = (id) => document.getElementById(id).value.trim();
+  if (newJobType === 'Transfer') return submitNewTransfer();
   const payload = {
     requesterEmail: currentUser.email, type: newJobType, clientRequestId: newJobRequestId,
     branch: v('jobBranch'), customerName: v('jobCustName'), customerContact: v('jobCustContact'), address: v('jobAddress'),
@@ -1904,6 +1967,48 @@ async function submitNewJob() {
   if (!payload.customerName || !payload.customerContact || !payload.address) { errEl.textContent = 'Customer name, contact number and address are required.'; return; }
   if (!payload.itemCategory || !payload.itemDescription) { errEl.textContent = 'Choose a category and describe the item.'; return; }
   if (!payload.requiredDate) { errEl.textContent = 'Choose the required date.'; return; }
+
+  const btn = document.getElementById('jobNewSubmit');
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  const res = await apiPost('createJob', payload);
+  btn.disabled = false; btn.textContent = 'Submit for approval';
+  if (!res.success) {
+    errEl.textContent = res.networkError
+      ? 'Lost connection — it may have gone through. Press Submit again: it won\'t create a duplicate.'
+      : (res.error || 'Could not submit.');
+    return;
+  }
+  closeNewJob();
+  showJobsNotice(res.ref + ' was sent to Head Office for approval.' + (res.warning ? ' Note: ' + res.warning : ''));
+  document.getElementById('jobsStatus').value = 'open';
+  await loadJobs();
+}
+
+async function submitNewTransfer() {
+  const errEl = document.getElementById('jobNewError');
+  const v = (id) => document.getElementById(id).value.trim();
+  const payload = {
+    requesterEmail: currentUser.email, type: 'Transfer', clientRequestId: newJobRequestId,
+    sendingBranch: v('ibtFrom'), receivingBranch: v('ibtTo'), reason: v('ibtReason'), requiredDate: v('jobRequiredDate'), items: []
+  };
+  errEl.textContent = '';
+  if (!payload.sendingBranch || !payload.receivingBranch) { errEl.textContent = 'Choose the sending and receiving branches.'; return; }
+  if (payload.sendingBranch === payload.receivingBranch) { errEl.textContent = 'The two branches must be different.'; return; }
+  if (jobsData.role === 'Manager' && payload.sendingBranch !== jobsData.myBranch && payload.receivingBranch !== jobsData.myBranch) {
+    errEl.textContent = 'One of the branches must be your own (' + jobsData.myBranch + ').'; return;
+  }
+  if (!payload.reason) { errEl.textContent = 'Give a reason for the transfer.'; return; }
+  const lines = document.querySelectorAll('#ibtLines .ibt-line');
+  for (let i = 0; i < lines.length; i++) {
+    const cat = lines[i].querySelector('.ibt-cat').value;
+    const desc = lines[i].querySelector('.ibt-desc').value.trim();
+    const qty = Number(lines[i].querySelector('.ibt-qty').value);
+    if (!cat && !desc && !qty) continue;
+    if (!cat || !desc || !Number.isInteger(qty) || qty < 1) { errEl.textContent = 'Item ' + (i + 1) + ' needs a category, a description and a whole-number quantity.'; return; }
+    payload.items.push({ category: cat, description: desc, qty: qty });
+  }
+  if (!payload.items.length) { errEl.textContent = 'Add at least one item.'; return; }
+  if (!payload.requiredDate) { errEl.textContent = 'Choose the requested transfer date.'; return; }
 
   const btn = document.getElementById('jobNewSubmit');
   btn.disabled = true; btn.textContent = 'Submitting…';
@@ -1958,8 +2063,10 @@ function closeJob() {
 
 function renderJob(activeAction) {
   const j = openJobData.job;
-  document.getElementById('jobTitle').textContent = j.ref + ' · ' + j.type;
-  document.getElementById('jobSubtitle').textContent = j.branch + ' · logged ' + formatShortDateTime(j.createdAt);
+  const isTransfer = j.type === 'Transfer';
+  document.getElementById('jobTitle').textContent = j.ref + ' · ' + (isTransfer ? 'Inter-branch transfer' : j.type);
+  document.getElementById('jobSubtitle').textContent = (isTransfer ? j.branch + ' → ' + j.receivingBranch : j.branch) +
+    ' · logged ' + formatShortDateTime(j.createdAt);
   const row = (label, value, html) => value ? '<div class="jd-row"><span>' + label + '</span><span>' + (html ? value : escapeHtml(value)) + '</span></div>' : '';
   const tel = String(j.customerContact || '').replace(/[^\d+]/g, '');
 
@@ -1967,7 +2074,7 @@ function renderJob(activeAction) {
   if (openJobData.actions.length) {
     actionsHtml = '<div class="jd-actions">' + openJobData.actions.map((a) =>
       '<button type="button" class="jd-action-btn' + (a.key === 'cancel' || a.key === 'fail' ? ' is-danger' : '') +
-      (a.key === 'complete' ? ' is-go' : '') + (activeAction === a.key ? ' active' : '') +
+      (a.key === 'complete' || a.key === 'receive' || a.key === 'dispatch' ? ' is-go' : '') + (activeAction === a.key ? ' active' : '') +
       '" data-action="' + a.key + '">' + escapeHtml(a.label) + '</button>').join('') + '</div>';
     if (activeAction) actionsHtml += jobActionForm(activeAction, j);
   }
@@ -1980,7 +2087,7 @@ function renderJob(activeAction) {
 
   document.getElementById('jobBody').innerHTML =
     '<div class="jd-status">' + jobStatusTag(j.status) + overdueTag(j) + todayTag(j) + '</div>' +
-    '<div class="jd-grid">' +
+    (isTransfer ? transferDetailHtml(j, row) : '<div class="jd-grid">' +
       row('Customer', j.customerName) +
       row('Contact', tel ? '<a href="tel:' + escapeAttr(tel) + '">' + escapeHtml(j.customerContact) + '</a>' : '', true) +
       row('Address', escapeHtml(j.address) + ' <a class="maps-link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=' +
@@ -1995,10 +2102,39 @@ function renderJob(activeAction) {
       row('Proof', j.proofUrl ? '<a href="' + escapeAttr(j.proofUrl) + '" target="_blank" rel="noopener">View signed delivery note</a>' : '', true) +
       row('Driver\'s note', j.completionNotes) +
       row('Last failed attempt', j.status !== 'Completed' ? j.lastFailReason : '') +
-    '</div>' +
+    '</div>') +
     actionsHtml +
     '<p class="error-text" id="jobActionError"></p>' +
     '<h3 class="form-sub">History</h3><ul class="job-history">' + history + '</ul>';
+}
+
+function transferDetailHtml(j, row) {
+  const items = openJobData.items || [];
+  const showSent = items.some((x) => x.qtyDispatched !== null);
+  const showGot = items.some((x) => x.qtyReceived !== null);
+  const table = '<div class="ibt-table-wrap"><table class="ibt-table"><thead><tr><th>#</th><th>Item</th><th>Requested</th>' +
+    (showSent ? '<th>Sent</th>' : '') + (showGot ? '<th>Received</th><th>Condition</th>' : '') + '</tr></thead><tbody>' +
+    items.map((x) =>
+      '<tr' + (x.discrepancy ? ' class="has-issue"' : '') + '><td>' + x.line + '</td>' +
+      '<td><strong>' + escapeHtml(x.description) + '</strong><span class="muted ibt-cat-label">' + escapeHtml(x.category) + '</span>' +
+        (x.discrepancy ? '<span class="ibt-issue">' + escapeHtml(x.discrepancy) + (x.notes ? ' — ' + escapeHtml(x.notes) : '') + '</span>' : '') + '</td>' +
+      '<td>' + x.qtyRequested + '</td>' +
+      (showSent ? '<td>' + (x.qtyDispatched === null ? '—' : x.qtyDispatched) + '</td>' : '') +
+      (showGot ? '<td>' + (x.qtyReceived === null ? '—' : x.qtyReceived) + '</td><td>' + escapeHtml(x.condition || '—') + '</td>' : '') +
+      '</tr>').join('') +
+    '</tbody></table></div>';
+  return '<div class="jd-grid">' +
+      row('From', j.branch) +
+      row('To', j.receivingBranch) +
+      row('Requested for', dayLabel(j.requiredDate)) +
+      row('Reason', j.reason) +
+      row('Approved by', j.approvedBy ? j.approvedBy + ' · ' + formatShortDateTime(j.approvedAt) : '') +
+      row('Dispatched', j.dispatchDate ? dayLabel(j.dispatchDate) + ' · ' + (j.driverName ? j.driverName + ' (driver)' : j.responsiblePerson) +
+        ' · confirmed by ' + j.dispatchedBy : '') +
+      row('Received', j.receivedAt ? 'Confirmed by ' + j.receivedBy + ' · ' + formatShortDateTime(j.receivedAt) : '') +
+      row('Resolution', j.resolutionNotes) +
+      row('Requested by', j.createdBy) +
+    '</div>' + table;
 }
 
 function jobActionForm(key, j) {
@@ -2006,7 +2142,44 @@ function jobActionForm(key, j) {
     ' <textarea id="jaNotes" rows="2"></textarea></label>';
   let body = '';
   let confirm = 'Confirm';
-  if (key === 'start') {
+  const items = openJobData.items || [];
+  if (key === 'dispatch') {
+    const drivers = openJobData.drivers || [];
+    body = '<p class="muted">Enter what is actually being sent (0 if an item isn\'t going).</p>' +
+      '<div class="ibt-form-lines">' + items.map((x) =>
+        '<label class="ibt-form-line"><span>' + escapeHtml(x.description) + ' <span class="muted">(requested ' + x.qtyRequested + ')</span></span>' +
+        '<input type="number" min="0" step="1" inputmode="numeric" class="ja-qty" data-line="' + x.line + '" value="' + x.qtyRequested + '"></label>').join('') +
+      '</div>' +
+      '<div class="grid-2"><label>Dispatch date <input type="date" id="jaDate" value="' + localToday() + '"></label>' +
+      '<label>Driver <select id="jaDriver"><option value="">No driver — branch staff taking it</option>' +
+        drivers.map((d) => '<option value="' + escapeAttr(d.email) + '">' + escapeHtml(d.fullName) + '</option>').join('') + '</select></label></div>' +
+      '<label>Responsible person <input type="text" id="jaPerson" value="' + escapeAttr(currentUser.fullName || '') + '" maxlength="120"></label>' +
+      notes('Note', false);
+    confirm = 'Confirm dispatch';
+  } else if (key === 'deliver') {
+    body = '<p class="muted">Confirm the items have been dropped off at ' + escapeHtml(j.receivingBranch) + '. The branch will then check and confirm what arrived.</p>';
+    confirm = 'Mark delivered';
+  } else if (key === 'receive') {
+    body = '<p class="muted">Count what actually arrived and note its condition. Any difference from what was sent is flagged for Head Office.</p>' +
+      '<div class="ibt-form-lines">' + items.map((x) => {
+        const sent = x.qtyDispatched === null ? x.qtyRequested : x.qtyDispatched;
+        return '<div class="ibt-form-line ibt-receive-line" data-line="' + x.line + '" data-sent="' + sent + '">' +
+          '<span>' + escapeHtml(x.description) + ' <span class="muted">(sent ' + sent + ')</span></span>' +
+          '<div class="ibt-receive-inputs">' +
+            '<input type="number" min="0" step="1" inputmode="numeric" class="ja-qty" aria-label="Quantity received" value="' + sent + '">' +
+            '<select class="ja-cond" aria-label="Condition">' + (openJobData.conditions || ['Good', 'Damaged']).map((c) => '<option>' + escapeHtml(c) + '</option>').join('') + '</select>' +
+          '</div>' +
+          '<input type="text" class="ja-line-note" placeholder="Note (if something\'s wrong)" maxlength="300" aria-label="Note">' +
+        '</div>';
+      }).join('') + '</div>' +
+      '<p class="ibt-warning" id="jaIssues" hidden></p>' +
+      notes('Note', false);
+    confirm = 'Confirm receipt';
+  } else if (key === 'resolve') {
+    body = '<p class="muted">Record how the discrepancy was sorted out (e.g. missing items found, damaged stock written off). This completes the transfer.</p>' +
+      notes('How was it resolved?', true);
+    confirm = 'Resolve and complete';
+  } else if (key === 'start') {
     body = '<p class="muted">Lets the branch know you\'re on your way.</p>';
     confirm = 'Start job';
   } else if (key === 'complete') {
@@ -2069,6 +2242,36 @@ async function onJobBodyClick(e) {
   const errEl = document.getElementById('jobActionError');
   const notesEl = document.getElementById('jaNotes');
   const payload = { requesterEmail: currentUser.email, ref: openJobRef, step: key, notes: notesEl ? notesEl.value.trim() : '' };
+  if (key === 'dispatch') {
+    payload.items = {};
+    let total = 0;
+    let bad = false;
+    document.querySelectorAll('#jobBody .ja-qty').forEach((i) => {
+      const q = Number(i.value);
+      if (i.value === '' || !Number.isInteger(q) || q < 0) bad = true;
+      payload.items[i.dataset.line] = q;
+      total += q || 0;
+    });
+    if (bad) { errEl.textContent = 'Enter a whole-number quantity for every item (0 if it isn\'t going).'; return; }
+    if (!total) { errEl.textContent = 'Nothing is being dispatched — enter at least one quantity.'; return; }
+    payload.dispatchDate = document.getElementById('jaDate').value;
+    payload.driverEmail = document.getElementById('jaDriver').value;
+    payload.responsiblePerson = document.getElementById('jaPerson').value.trim();
+    if (!payload.dispatchDate) { errEl.textContent = 'Choose the dispatch date.'; return; }
+    if (!payload.driverEmail && !payload.responsiblePerson) { errEl.textContent = 'Choose a driver or enter who is taking the items.'; return; }
+  }
+  if (key === 'receive') {
+    payload.items = {};
+    let bad = false;
+    document.querySelectorAll('#jobBody .ibt-receive-line').forEach((l) => {
+      const qEl = l.querySelector('.ja-qty');
+      const q = Number(qEl.value);
+      if (qEl.value === '' || !Number.isInteger(q) || q < 0) bad = true;
+      payload.items[l.dataset.line] = { qty: q, condition: l.querySelector('.ja-cond').value, notes: l.querySelector('.ja-line-note').value.trim() };
+    });
+    if (bad) { errEl.textContent = 'Enter a whole-number quantity received for every item (0 if none arrived).'; return; }
+  }
+  if (key === 'resolve' && !payload.notes) { errEl.textContent = 'Please describe how it was resolved.'; return; }
   if (key === 'complete') {
     if (!jobProofImage) { errEl.textContent = 'Add a photo of the signed delivery note.'; return; }
     payload.proofImage = jobProofImage;
