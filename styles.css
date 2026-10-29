@@ -643,3 +643,13 @@ textarea { min-height: 60px; resize: vertical; }
   .topbar-right:has(.bell-btn:not([hidden])):has(.install-btn:not([hidden])) .whoami { display: none; }
 }
 .bell-count { top: -5px; right: -7px; min-width: 14px; height: 16px; line-height: 16px; font-size: 10px; padding: 0 3px; }
+
+/* ─── Deliveries stage 2: driver actions ─────────────────────────── */
+.js-today { background: var(--primary); color: #fff; }
+.maps-link { display: inline-block; margin-left: 6px; font-size: 13px; white-space: nowrap; }
+.jd-action-btn.is-go { border-color: var(--success); background: var(--success); color: #fff; }
+.jd-action-btn.is-go:hover, .jd-action-btn.is-go.active { background: #176a3a; border-color: #176a3a; color: #fff; }
+.btn-go { background: var(--success); }
+@media (max-width: 520px) {
+  .jd-actions .jd-action-btn { flex: 1 1 100%; padding: 12px 14px; font-size: 15px; }
+}

@@ -1697,12 +1697,22 @@ let jobsUiBound = false;
 let openJobRef = null;
 let openJobData = null;     // last 'job' response
 let newJobType = 'Delivery';
+let jobProofImage = '';     // compressed photo of the signed delivery note
+const PROOF_MAX_DIMENSION = 1800; // a bit sharper than receipts so signatures stay readable
+const PROOF_JPEG_QUALITY = 0.78;
 let newJobRequestId = '';
 
 function jobStatusTag(status) {
   return '<span class="status-tag job-status ' + (JOB_STATUS_CLASS[status] || 'js-hold') + '">' + escapeHtml(status) + '</span>';
 }
 function overdueTag(job) { return job.overdue ? ' <span class="status-tag js-overdue">Overdue</span>' : ''; }
+function localToday() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function todayTag(job) {
+  return job.scheduledDate === localToday() && JOB_FINAL.indexOf(job.status) === -1 ? ' <span class="status-tag js-today">Today</span>' : '';
+}
 function dayLabel(yyyyMmDd) {
   if (!yyyyMmDd) return '';
   const p = String(yyyyMmDd).split('-');
@@ -1737,6 +1747,23 @@ function bindJobsUi() {
     else if (!document.getElementById('jobNewBackdrop').hidden) closeNewJob();
   });
   document.getElementById('jobBody').addEventListener('click', onJobBodyClick);
+  document.getElementById('jobBody').addEventListener('change', async (e) => {
+    if (e.target.id !== 'jaProof') return;
+    const file = e.target.files && e.target.files[0];
+    const errEl = document.getElementById('jaProofError');
+    errEl.textContent = '';
+    jobProofImage = '';
+    document.getElementById('jaProofWrap').hidden = true;
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { errEl.textContent = 'Please choose a photo.'; e.target.value = ''; return; }
+    try {
+      jobProofImage = await resizeImageFileToDataUrl(file, PROOF_MAX_DIMENSION, PROOF_JPEG_QUALITY);
+      document.getElementById('jaProofPreview').src = jobProofImage;
+      document.getElementById('jaProofWrap').hidden = false;
+    } catch (err) {
+      errEl.textContent = err.message || 'Could not use that photo. Please take it again.';
+    }
+  });
   document.getElementById('jobNewBackdrop').addEventListener('input', () => { document.getElementById('jobNewError').textContent = ''; });
 }
 
@@ -1757,7 +1784,7 @@ async function loadJobs() {
   jobsData = res;
   const intro = {
     Manager: 'Delivery and collection requests for ' + res.myBranch + '. New requests go to Head Office for approval.',
-    Driver: 'Jobs assigned to you. Starting and completing jobs from the app is coming in the next update.',
+    Driver: 'Your jobs. Open one to start it, mark it completed with a photo of the signed delivery note, or record that it couldn\'t be done.',
     BackOffice: 'All delivery and collection requests across branches (view only).'
   }[res.role] || 'All delivery and collection requests across branches. Open a job to approve, schedule a driver, put it on hold or cancel it.';
   document.getElementById('jobsIntro').textContent = intro;
@@ -1796,7 +1823,10 @@ function renderJobs() {
   rows.sort((a, b) => {
     const af = JOB_FINAL.indexOf(a.status) !== -1, bf = JOB_FINAL.indexOf(b.status) !== -1;
     if (af !== bf) return af ? 1 : -1;
-    if (!af) return (a.requiredDate || '9').localeCompare(b.requiredDate || '9') || a.ref.localeCompare(b.ref);
+    if (!af) {
+      const key = (j) => (jobsData.role === 'Driver' ? j.scheduledDate : '') || j.requiredDate || '9';
+      return key(a).localeCompare(key(b)) || a.ref.localeCompare(b.ref);
+    }
     return b.ref.localeCompare(a.ref);
   });
 
@@ -1804,7 +1834,7 @@ function renderJobs() {
     '<button type="button" class="job-card' + (j.overdue ? ' is-overdue' : '') + '" data-ref="' + escapeAttr(j.ref) + '">' +
       '<span class="job-card-top"><span class="job-ref">' + escapeHtml(j.ref) + '</span>' +
         '<span class="type-tag type-' + escapeAttr(j.type.toLowerCase()) + '">' + escapeHtml(j.type) + '</span>' +
-        jobStatusTag(j.status) + overdueTag(j) + '</span>' +
+        jobStatusTag(j.status) + overdueTag(j) + todayTag(j) + '</span>' +
       '<span class="job-card-main"><strong>' + escapeHtml(j.customerName) + '</strong> · ' +
         escapeHtml(j.itemCategory) + ' — ' + escapeHtml(j.itemDescription) + '</span>' +
       '<span class="job-card-meta">' + escapeHtml(j.branch) + ' · Required ' + escapeHtml(dayLabel(j.requiredDate)) +
@@ -1936,7 +1966,8 @@ function renderJob(activeAction) {
   let actionsHtml = '';
   if (openJobData.actions.length) {
     actionsHtml = '<div class="jd-actions">' + openJobData.actions.map((a) =>
-      '<button type="button" class="jd-action-btn' + (a.key === 'cancel' ? ' is-danger' : '') + (activeAction === a.key ? ' active' : '') +
+      '<button type="button" class="jd-action-btn' + (a.key === 'cancel' || a.key === 'fail' ? ' is-danger' : '') +
+      (a.key === 'complete' ? ' is-go' : '') + (activeAction === a.key ? ' active' : '') +
       '" data-action="' + a.key + '">' + escapeHtml(a.label) + '</button>').join('') + '</div>';
     if (activeAction) actionsHtml += jobActionForm(activeAction, j);
   }
@@ -1948,17 +1979,22 @@ function renderJob(activeAction) {
     '<span class="jh-by muted">' + escapeHtml(h.by) + '</span></li>').join('');
 
   document.getElementById('jobBody').innerHTML =
-    '<div class="jd-status">' + jobStatusTag(j.status) + overdueTag(j) + '</div>' +
+    '<div class="jd-status">' + jobStatusTag(j.status) + overdueTag(j) + todayTag(j) + '</div>' +
     '<div class="jd-grid">' +
       row('Customer', j.customerName) +
       row('Contact', tel ? '<a href="tel:' + escapeAttr(tel) + '">' + escapeHtml(j.customerContact) + '</a>' : '', true) +
-      row('Address', j.address) +
+      row('Address', escapeHtml(j.address) + ' <a class="maps-link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=' +
+        encodeURIComponent(j.address) + '">Open in Maps</a>', true) +
       row('Item', j.itemCategory + ' — ' + j.itemDescription) +
       row('Required by', dayLabel(j.requiredDate)) +
       row('Instructions', j.instructions) +
       row('Driver', j.driverName ? j.driverName + (j.scheduledDate ? ' · ' + dayLabel(j.scheduledDate) : '') : '') +
       row('Approved by', j.approvedBy ? j.approvedBy + ' · ' + formatShortDateTime(j.approvedAt) : '') +
       row('Logged by', j.createdBy) +
+      row('Completed', j.completedAt ? (openJobData.completedByName || j.completedBy) + ' · ' + formatShortDateTime(j.completedAt) : '') +
+      row('Proof', j.proofUrl ? '<a href="' + escapeAttr(j.proofUrl) + '" target="_blank" rel="noopener">View signed delivery note</a>' : '', true) +
+      row('Driver\'s note', j.completionNotes) +
+      row('Last failed attempt', j.status !== 'Completed' ? j.lastFailReason : '') +
     '</div>' +
     actionsHtml +
     '<p class="error-text" id="jobActionError"></p>' +
@@ -1970,7 +2006,23 @@ function jobActionForm(key, j) {
     ' <textarea id="jaNotes" rows="2"></textarea></label>';
   let body = '';
   let confirm = 'Confirm';
-  if (key === 'approve') {
+  if (key === 'start') {
+    body = '<p class="muted">Lets the branch know you\'re on your way.</p>';
+    confirm = 'Start job';
+  } else if (key === 'complete') {
+    body = '<label>Photo of the ' + (j.type === 'Collection' ? 'collection slip' : 'delivery note') + ', signed by the customer' +
+      ' <input type="file" id="jaProof" accept="image/*" capture="environment"></label>' +
+      '<div id="jaProofWrap" class="exp-preview-wrap" hidden><img id="jaProofPreview" class="exp-preview" alt="Proof photo preview"></div>' +
+      '<p class="error-text" id="jaProofError"></p>' +
+      notes('Note, e.g. who received it', false);
+    confirm = 'Mark completed';
+  } else if (key === 'fail') {
+    body = '<label>What went wrong? <select id="jaReason"><option value="">Choose…</option>' +
+      (openJobData.failReasons || []).map((r) => '<option>' + escapeHtml(r) + '</option>').join('') + '</select></label>' +
+      '<p class="muted" style="font-size:13px;margin-top:-4px;">The job stays open so Head Office can reschedule it.</p>' +
+      notes('Details', false);
+    confirm = 'Record failed attempt';
+  } else if (key === 'approve') {
     body = '<p class="muted">Approve this ' + j.type.toLowerCase() + ' so it can be scheduled with a driver.</p>' + notes('Note', false);
     confirm = 'Approve';
   } else if (key === 'schedule') {
@@ -1996,12 +2048,19 @@ function jobActionForm(key, j) {
   }
   return '<div class="jd-form">' + body +
     '<div class="user-edit-actions"><button type="button" class="btn-secondary" data-form="back">Back</button>' +
-    '<button type="button" class="btn-primary' + (key === 'cancel' ? ' btn-danger' : '') + '" data-form="confirm" data-action="' + key + '">' + escapeHtml(confirm) + '</button></div></div>';
+    '<button type="button" class="btn-primary' + (key === 'cancel' || key === 'fail' ? ' btn-danger' : '') + (key === 'complete' ? ' btn-go' : '') +
+    '" data-form="confirm" data-action="' + key + '">' + escapeHtml(confirm) + '</button></div></div>';
 }
 
 async function onJobBodyClick(e) {
   const actionBtn = e.target.closest('.jd-action-btn');
-  if (actionBtn) { renderJob(actionBtn.dataset.action); return; }
+  if (actionBtn) {
+    jobProofImage = '';
+    renderJob(actionBtn.dataset.action);
+    const form = document.querySelector('#jobBody .jd-form');
+    if (form && form.scrollIntoView) form.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return;
+  }
   const formBtn = e.target.closest('[data-form]');
   if (!formBtn) return;
   if (formBtn.dataset.form === 'back') { renderJob(); return; }
@@ -2010,6 +2069,15 @@ async function onJobBodyClick(e) {
   const errEl = document.getElementById('jobActionError');
   const notesEl = document.getElementById('jaNotes');
   const payload = { requesterEmail: currentUser.email, ref: openJobRef, step: key, notes: notesEl ? notesEl.value.trim() : '' };
+  if (key === 'complete') {
+    if (!jobProofImage) { errEl.textContent = 'Add a photo of the signed delivery note.'; return; }
+    payload.proofImage = jobProofImage;
+  }
+  if (key === 'fail') {
+    payload.reason = document.getElementById('jaReason').value;
+    if (!payload.reason) { errEl.textContent = 'Choose what went wrong.'; return; }
+    if (payload.reason === 'Other' && !payload.notes) { errEl.textContent = 'Please describe what went wrong.'; return; }
+  }
   if (key === 'schedule') {
     payload.driverEmail = document.getElementById('jaDriver').value;
     payload.scheduledDate = document.getElementById('jaDate').value;
@@ -2017,8 +2085,9 @@ async function onJobBodyClick(e) {
   }
   if ((key === 'hold' || key === 'cancel') && !payload.notes) { errEl.textContent = 'Please add a reason.'; return; }
 
-  formBtn.disabled = true; formBtn.textContent = 'Saving…';
+  formBtn.disabled = true; formBtn.textContent = key === 'complete' ? 'Uploading photo…' : 'Saving…';
   const res = await apiPost('jobAction', payload);
+  if (res.success) jobProofImage = '';
   if (!res.success) {
     errEl.textContent = res.error || 'Could not save.';
     formBtn.disabled = false; formBtn.textContent = 'Try again';
