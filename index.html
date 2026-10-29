@@ -27,6 +27,10 @@
       <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1zM5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z"/></svg>
       <span>Download App</span>
     </button>
+    <button id="bellBtn" class="bell-btn" type="button" aria-label="Notifications" aria-haspopup="true" aria-expanded="false" hidden>
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2a6 6 0 0 0-6 6v3.6l-1.7 3A1 1 0 0 0 5.2 16h13.6a1 1 0 0 0 .9-1.4L18 11.6V8a6 6 0 0 0-6-6zm0 20a3 3 0 0 0 2.8-2H9.2A3 3 0 0 0 12 22z"/></svg>
+      <span id="bellCount" class="bell-count" hidden></span>
+    </button>
     <span id="whoami" class="whoami"></span>
     <button id="switchUserBtn" class="link-btn" hidden>Switch user</button>
   </div>
@@ -85,6 +89,12 @@
     <button type="button" id="devLoginBtn" class="btn-primary">Sign in</button>
     <p id="devLoginError" class="error-text"></p>
     <button type="button" id="devLoginSwitch" class="link-btn">Use a different email</button>
+  </section>
+
+  <!-- ─── NO TABS FOR THIS ROLE YET ────────────────────────── -->
+  <section id="view-nopages" class="view card" hidden>
+    <h1>Nothing here yet</h1>
+    <p>Your account is set up, but there's nothing for your role in the app just yet. Your admin team will let you know when there is.</p>
   </section>
 
   <!-- ─── INACTIVE VIEW (access switched off by an admin) ──── -->
@@ -209,31 +219,51 @@
     </div>
   </section>
 
-  <!-- ─── DELIVERIES / COLLECTIONS (Pro: deliveries — placeholder) ─── -->
-  <section id="view-deliveries" class="view card" hidden>
-    <h1>Delivery &amp; Collection Service</h1>
-    <p class="muted">Coming soon. This tab will track deliveries, donation collections and stock moving between branches.</p>
-    <div class="plan-grid">
-      <div class="plan-card">
-        <h3>Deliveries</h3>
-        <p>A customer buys a large item (e.g. a fridge) and asks for it to be delivered. Staff capture the customer's name, contact, address and the item.</p>
+  <!-- ─── DELIVERIES & COLLECTIONS (Pro: deliveries) ────────── -->
+  <section id="view-deliveries" class="view" hidden>
+    <div class="card">
+      <div class="jobs-head">
+        <h1>Deliveries &amp; Collections</h1>
+        <button type="button" id="newJobBtn" class="btn-primary jobs-new-btn" hidden>+ New request</button>
       </div>
-      <div class="plan-card">
-        <h3>Collections</h3>
-        <p>A customer has items to donate. Staff capture the pickup details so a driver can collect them.</p>
+      <p class="muted" id="jobsIntro"></p>
+      <p class="jobs-notice" id="jobsNotice" hidden></p>
+      <div class="jobs-toolbar">
+        <label class="jobs-search">Search
+          <input type="search" id="jobsSearch" placeholder="Reference, customer, address or item" autocomplete="off">
+        </label>
+        <label>Status
+          <select id="jobsStatus">
+            <option value="open" selected>Open jobs</option>
+            <option value="overdue">Overdue</option>
+            <option value="Pending Approval">Pending Approval</option>
+            <option value="Approved">Approved</option>
+            <option value="Scheduled">Scheduled</option>
+            <option value="In Progress">In Progress</option>
+            <option value="Failed Attempt">Failed Attempt</option>
+            <option value="On Hold">On Hold</option>
+            <option value="Completed">Completed</option>
+            <option value="Cancelled">Cancelled</option>
+            <option value="all">All jobs</option>
+          </select>
+        </label>
+        <label>Type
+          <select id="jobsType">
+            <option value="">All</option>
+            <option value="Delivery">Deliveries</option>
+            <option value="Collection">Collections</option>
+          </select>
+        </label>
+        <label id="jobsBranchWrap" hidden>Branch
+          <select id="jobsBranch"><option value="">All branches</option></select>
+        </label>
       </div>
-      <div class="plan-card">
-        <h3>Inter-branch transfers</h3>
-        <p>Stock that needs to move from one branch to another.</p>
-      </div>
+      <p class="muted jobs-count" id="jobsCount"></p>
+      <div id="jobsLoading" class="muted">Loading…</div>
+      <p id="jobsError" class="error-text" hidden></p>
+      <div id="jobsList" class="jobs-list"></div>
+      <p id="jobsEmpty" class="muted" hidden>No jobs match your search or filter.</p>
     </div>
-    <h2 style="margin-top:20px;">Planned flow</h2>
-    <ol class="plan-steps">
-      <li>Staff log the delivery, collection or transfer.</li>
-      <li>Head Office / Admin get an in-app notification and an email to action it.</li>
-      <li>The driver confirms in the app once it's collected and delivered.</li>
-      <li>The ticket closes.</li>
-    </ol>
   </section>
 
   <!-- ─── HEAD OFFICE EXPENSES (Pro: hoExpenses — placeholder) ─── -->
@@ -556,6 +586,65 @@
         <button type="button" class="btn-primary" id="userEditSave">Save changes</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ─── NOTIFICATIONS PANEL (the bell) ───────────────────────── -->
+<div id="bellPanel" class="bell-panel" role="dialog" aria-label="Notifications" hidden>
+  <div class="bell-head">
+    <strong>Notifications</strong>
+    <button type="button" id="bellReadAll" class="link-btn">Mark all read</button>
+  </div>
+  <div id="bellList" class="bell-list"></div>
+</div>
+
+<!-- ─── NEW DELIVERY / COLLECTION REQUEST ───────────────────── -->
+<div id="jobNewBackdrop" class="modal-backdrop" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="jobNewTitle">
+    <div class="modal-head">
+      <h2 id="jobNewTitle" style="margin:0;">New request</h2>
+      <button type="button" class="modal-close" id="jobNewClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="seg" role="radiogroup" aria-label="Request type">
+        <button type="button" role="radio" data-type="Delivery">Delivery</button>
+        <button type="button" role="radio" data-type="Collection">Collection</button>
+      </div>
+      <p class="muted seg-hint" id="jobTypeHint"></p>
+      <label id="jobBranchWrap">Branch
+        <select id="jobBranch"></select>
+      </label>
+      <h3 class="form-sub">Customer</h3>
+      <label>Customer name <input type="text" id="jobCustName" autocomplete="off"></label>
+      <label>Contact number <input type="tel" id="jobCustContact" autocomplete="off"></label>
+      <label>Address <textarea id="jobAddress" rows="2"></textarea></label>
+      <h3 class="form-sub">Item</h3>
+      <div class="grid-2">
+        <label>Category <select id="jobCategory"></select></label>
+        <label>Required date <input type="date" id="jobRequiredDate"></label>
+      </div>
+      <label>Item description <input type="text" id="jobItemDesc" placeholder="e.g. White double-door fridge" autocomplete="off"></label>
+      <label>Special instructions (optional) <textarea id="jobInstructions" rows="2" placeholder="e.g. Third floor, no lift. Call before arriving."></textarea></label>
+      <p class="error-text" id="jobNewError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="jobNewCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="jobNewSubmit">Submit for approval</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── JOB DETAIL ────────────────────────────────────────────── -->
+<div id="jobBackdrop" class="modal-backdrop" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="jobTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="jobTitle" style="margin:0;"></h2>
+        <p class="muted" id="jobSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="jobClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="jobBody"></div>
   </div>
 </div>
 

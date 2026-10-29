@@ -87,8 +87,8 @@ async function fetchWithRetry(doFetch, attempts) {
 // ─────────────────────────────────────────────────────────────────────
 
 const views = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'manager', 'shopexp', 'submitted', 'admin',
-  'backoffice', 'deliveries', 'hoexp', 'developer', 'loading'];
-const NAVLESS_VIEWS = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'loading'];
+  'backoffice', 'deliveries', 'hoexp', 'developer', 'nopages', 'loading'];
+const NAVLESS_VIEWS = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'nopages', 'loading'];
 function showView(name) {
   views.forEach((v) => {
     document.getElementById('view-' + v).hidden = (v !== name);
@@ -100,6 +100,7 @@ function showView(name) {
 let currentUser = null; // { email, fullName, role, branch }
 
 document.getElementById('switchUserBtn').addEventListener('click', () => {
+  stopBell();
   if (getDevToken()) { apiPost('devLogout', {}); setDevToken(''); }
   localStorage.removeItem(STORAGE_KEY);
   currentUser = null;
@@ -154,7 +155,17 @@ async function routeForEmail(email) {
 
   if (result.status === 'Approved' && ROLE_PAGES[result.role]) {
     buildNav();
-    openPage(ROLE_HOME[result.role]);
+    startBell();
+    const pages = allowedPages();
+    if (!pages.length) { showView('nopages'); return; }
+    // Opened from an email link like …/CashUp/#job=DEL-00012?
+    const linkedJob = takeLinkedJobRef();
+    if (linkedJob && pages.indexOf('deliveries') !== -1) {
+      openPage('deliveries');
+      openJob(linkedJob);
+      return;
+    }
+    openPage(pages.indexOf(ROLE_HOME[result.role]) !== -1 ? ROLE_HOME[result.role] : pages[0]);
     return;
   }
 
@@ -207,9 +218,10 @@ const ROLE_PAGES = {
   Manager:    ['cashup', 'shopexp', 'deliveries'],
   BackOffice: ['backoffice', 'deliveries'],
   Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp'],
-  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'developer']
+  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'developer'],
+  Driver:     ['deliveries']
 };
-const ROLE_HOME = { Manager: 'cashup', BackOffice: 'backoffice', Admin: 'approvals', Developer: 'approvals' };
+const ROLE_HOME = { Manager: 'cashup', BackOffice: 'backoffice', Admin: 'approvals', Developer: 'approvals', Driver: 'deliveries' };
 let currentPage = null;
 
 function featureOn(key) {
@@ -263,6 +275,7 @@ function openPage(page) {
       break;
     case 'deliveries':
       showView('deliveries');
+      loadJobs();
       break;
     case 'hoexp':
       showView('hoexp');
@@ -284,6 +297,7 @@ let devLoginEmailValue = '';
 function showDevLogin(email, message) {
   devLoginEmailValue = email;
   currentUser = null;
+  stopBell();
   document.getElementById('appNav').innerHTML = '';
   document.body.classList.remove('wide-admin');
   document.getElementById('devLoginEmail').textContent = email;
@@ -1365,12 +1379,26 @@ function renderPendingRequests(result, adminEmail) {
       '<div class="muted">' + escapeHtml(formatContact(p.contact)) + ' · ' + escapeHtml(p.email) + '</div>' +
       '<div class="muted">Requested branch: ' + escapeHtml(p.requestedBranch || '—') + '</div>' +
       '<div class="pending-actions">' +
-        '<select class="role-select"><option value="Manager">Store Manager</option><option value="BackOffice">Back Office</option><option value="Admin">Admin</option></select>' +
+        '<select class="role-select"><option value="Manager">Store Manager</option><option value="BackOffice">Back Office</option><option value="Admin">Admin</option>' +
+          (featureOn('deliveries') ? '<option value="Driver">Driver</option>' : '') + '</select>' +
         '<select class="branch-select">' + branchOptions + '</select>' +
         '<button class="btn-approve">Approve</button>' +
         '<button class="btn-reject">Reject</button>' +
       '</div>';
 
+    // Drivers are shared across all branches.
+    div.querySelector('.role-select').addEventListener('change', (e) => {
+      const branchSel = div.querySelector('.branch-select');
+      const allOpt = branchSel.querySelector('option[value="All branches"]');
+      if (e.target.value === 'Driver') {
+        if (!allOpt) branchSel.insertAdjacentHTML('afterbegin', '<option value="All branches">All branches</option>');
+        branchSel.value = 'All branches';
+        branchSel.disabled = true;
+      } else {
+        if (allOpt) allOpt.remove();
+        branchSel.disabled = false;
+      }
+    });
     div.querySelector('.btn-approve').addEventListener('click', async () => {
       const role = div.querySelector('.role-select').value;
       const branch = div.querySelector('.branch-select').value;
@@ -1484,7 +1512,8 @@ function openUserEdit(user) {
   // and a developer's role stays Developer.
   const roleSel = document.getElementById('userEditRole');
   const isDevTarget = user.role === 'Developer';
-  const roleChoices = isDevTarget ? ['Developer'] : ['Manager', 'BackOffice', 'Admin'];
+  const roleChoices = isDevTarget ? ['Developer']
+    : ['Manager', 'BackOffice', 'Admin'].concat(featureOn('deliveries') || user.role === 'Driver' ? ['Driver'] : []);
   roleSel.innerHTML = roleChoices.map((r) => '<option value="' + r + '">' + ROLE_LABELS[r] + '</option>').join('');
   roleSel.value = roleChoices.indexOf(user.role) !== -1 ? user.role : roleChoices[0];
   roleSel.disabled = isSelf || isDevTarget;
@@ -1519,6 +1548,20 @@ function updateUserEditNote() {
   const note = document.getElementById('userEditNote');
   const status = document.getElementById('userEditStatus').value;
   const role = document.getElementById('userEditRole').value;
+
+  // Drivers are shared across all branches, so their branch is fixed.
+  const branchSel = document.getElementById('userEditBranch');
+  if (role === 'Driver') {
+    if (!Array.from(branchSel.options).some((o) => o.value === 'All branches')) {
+      branchSel.insertAdjacentHTML('afterbegin', '<option value="All branches">All branches</option>');
+    }
+    branchSel.value = 'All branches';
+    branchSel.disabled = true;
+  } else {
+    branchSel.disabled = false;
+    const allOpt = branchSel.querySelector('option[value="All branches"]');
+    if (allOpt && editingUser.role !== 'Developer') allOpt.remove();
+  }
   let text = '';
   if (sameEmail(editingUser.email, usersAdminEmail)) {
     text = 'This is your own account. You can change your branch, but not your own status or role.';
@@ -1638,6 +1681,453 @@ async function loadBackOfficeView(user) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// DELIVERIES & COLLECTIONS (Pro feature "deliveries") — stage 1
+// What each person can see and do is decided by the server; the page just
+// shows the jobs and the actions it's given.
+// ─────────────────────────────────────────────────────────────────────
+
+const JOB_STATUS_CLASS = {
+  'Pending Approval': 'js-pending', 'Approved': 'js-approved', 'Scheduled': 'js-scheduled',
+  'In Progress': 'js-progress', 'Completed': 'js-done', 'Failed Attempt': 'js-failed',
+  'On Hold': 'js-hold', 'Cancelled': 'js-cancelled'
+};
+const JOB_FINAL = ['Completed', 'Cancelled'];
+let jobsData = null;        // last 'jobs' response
+let jobsUiBound = false;
+let openJobRef = null;
+let openJobData = null;     // last 'job' response
+let newJobType = 'Delivery';
+let newJobRequestId = '';
+
+function jobStatusTag(status) {
+  return '<span class="status-tag job-status ' + (JOB_STATUS_CLASS[status] || 'js-hold') + '">' + escapeHtml(status) + '</span>';
+}
+function overdueTag(job) { return job.overdue ? ' <span class="status-tag js-overdue">Overdue</span>' : ''; }
+function dayLabel(yyyyMmDd) {
+  if (!yyyyMmDd) return '';
+  const p = String(yyyyMmDd).split('-');
+  return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : String(yyyyMmDd);
+}
+function makeRequestId() {
+  try { if (crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (e) { /* older browsers */ }
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+function bindJobsUi() {
+  if (jobsUiBound) return;
+  jobsUiBound = true;
+  ['jobsSearch', 'jobsStatus', 'jobsType', 'jobsBranch'].forEach((id) =>
+    document.getElementById(id).addEventListener(id === 'jobsSearch' ? 'input' : 'change', renderJobs));
+  document.getElementById('jobsList').addEventListener('click', (e) => {
+    const card = e.target.closest('.job-card');
+    if (card) openJob(card.dataset.ref);
+  });
+  document.getElementById('newJobBtn').addEventListener('click', openNewJob);
+  document.getElementById('jobNewClose').addEventListener('click', closeNewJob);
+  document.getElementById('jobNewCancel').addEventListener('click', closeNewJob);
+  document.getElementById('jobNewSubmit').addEventListener('click', submitNewJob);
+  document.querySelectorAll('#jobNewBackdrop .seg button').forEach((b) => b.addEventListener('click', () => setNewJobType(b.dataset.type)));
+  document.getElementById('jobClose').addEventListener('click', closeJob);
+  ['jobNewBackdrop', 'jobBackdrop'].forEach((id) => document.getElementById(id).addEventListener('click', (e) => {
+    if (e.target.id === id) (id === 'jobBackdrop' ? closeJob : closeNewJob)();
+  }));
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!document.getElementById('jobBackdrop').hidden) closeJob();
+    else if (!document.getElementById('jobNewBackdrop').hidden) closeNewJob();
+  });
+  document.getElementById('jobBody').addEventListener('click', onJobBodyClick);
+  document.getElementById('jobNewBackdrop').addEventListener('input', () => { document.getElementById('jobNewError').textContent = ''; });
+}
+
+async function loadJobs() {
+  bindJobsUi();
+  document.getElementById('jobsLoading').hidden = !!jobsData ? true : false;
+  document.getElementById('jobsError').hidden = true;
+  const res = await apiGet('jobs', { email: currentUser.email });
+  document.getElementById('jobsLoading').hidden = true;
+  if (!res.success) {
+    const err = document.getElementById('jobsError');
+    err.textContent = res.error === 'Unknown action'
+      ? 'Deliveries needs the updated Apps Script. Redeploy it (Manage deployments → Edit → New version), then refresh.'
+      : (res.error || 'Could not load jobs.');
+    err.hidden = false;
+    return;
+  }
+  jobsData = res;
+  const intro = {
+    Manager: 'Delivery and collection requests for ' + res.myBranch + '. New requests go to Head Office for approval.',
+    Driver: 'Jobs assigned to you. Starting and completing jobs from the app is coming in the next update.',
+    BackOffice: 'All delivery and collection requests across branches (view only).'
+  }[res.role] || 'All delivery and collection requests across branches. Open a job to approve, schedule a driver, put it on hold or cancel it.';
+  document.getElementById('jobsIntro').textContent = intro;
+  document.getElementById('newJobBtn').hidden = !res.canCreate;
+
+  const branchWrap = document.getElementById('jobsBranchWrap');
+  branchWrap.hidden = !(res.isOffice || res.role === 'BackOffice');
+  const branchSel = document.getElementById('jobsBranch');
+  const keep = branchSel.value;
+  branchSel.innerHTML = '<option value="">All branches</option>' +
+    res.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+  branchSel.value = keep;
+  renderJobs();
+}
+
+function renderJobs() {
+  if (!jobsData) return;
+  const status = document.getElementById('jobsStatus').value;
+  const type = document.getElementById('jobsType').value;
+  const branch = document.getElementById('jobsBranch').value;
+  const q = document.getElementById('jobsSearch').value.trim().toLowerCase();
+
+  const rows = jobsData.jobs.filter((j) => {
+    if (status === 'open' && JOB_FINAL.indexOf(j.status) !== -1) return false;
+    if (status === 'overdue' && !j.overdue) return false;
+    if (['open', 'overdue', 'all'].indexOf(status) === -1 && j.status !== status) return false;
+    if (type && j.type !== type) return false;
+    if (branch && j.branch !== branch) return false;
+    if (q) {
+      const hay = [j.ref, j.customerName, j.customerContact, j.address, j.itemCategory, j.itemDescription, j.branch, j.driverName].join(' ').toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+  // Open jobs: soonest required date first. Finished jobs: newest first.
+  rows.sort((a, b) => {
+    const af = JOB_FINAL.indexOf(a.status) !== -1, bf = JOB_FINAL.indexOf(b.status) !== -1;
+    if (af !== bf) return af ? 1 : -1;
+    if (!af) return (a.requiredDate || '9').localeCompare(b.requiredDate || '9') || a.ref.localeCompare(b.ref);
+    return b.ref.localeCompare(a.ref);
+  });
+
+  document.getElementById('jobsList').innerHTML = rows.map((j) =>
+    '<button type="button" class="job-card' + (j.overdue ? ' is-overdue' : '') + '" data-ref="' + escapeAttr(j.ref) + '">' +
+      '<span class="job-card-top"><span class="job-ref">' + escapeHtml(j.ref) + '</span>' +
+        '<span class="type-tag type-' + escapeAttr(j.type.toLowerCase()) + '">' + escapeHtml(j.type) + '</span>' +
+        jobStatusTag(j.status) + overdueTag(j) + '</span>' +
+      '<span class="job-card-main"><strong>' + escapeHtml(j.customerName) + '</strong> · ' +
+        escapeHtml(j.itemCategory) + ' — ' + escapeHtml(j.itemDescription) + '</span>' +
+      '<span class="job-card-meta">' + escapeHtml(j.branch) + ' · Required ' + escapeHtml(dayLabel(j.requiredDate)) +
+        (j.driverName ? ' · ' + escapeHtml(j.driverName) + (j.scheduledDate ? ' on ' + escapeHtml(dayLabel(j.scheduledDate)) : '') : '') +
+      '</span>' +
+    '</button>'
+  ).join('');
+
+  const total = jobsData.jobs.length;
+  document.getElementById('jobsCount').textContent = rows.length === total
+    ? total + ' job' + (total === 1 ? '' : 's') : 'Showing ' + rows.length + ' of ' + total;
+  document.getElementById('jobsEmpty').hidden = rows.length !== 0;
+}
+
+// ── New request ──────────────────────────────────────────────────────
+
+function setNewJobType(type) {
+  newJobType = type;
+  document.querySelectorAll('#jobNewBackdrop .seg button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.type === type);
+    b.setAttribute('aria-checked', b.dataset.type === type ? 'true' : 'false');
+  });
+  document.getElementById('jobTypeHint').textContent = type === 'Delivery'
+    ? 'Taking an item bought in-store to the customer\'s address.'
+    : 'Collecting items a customer wants to donate.';
+  document.getElementById('jobNewTitle').textContent = 'New ' + type.toLowerCase() + ' request';
+}
+
+function openNewJob() {
+  if (!jobsData) return;
+  newJobRequestId = makeRequestId(); // a retry of this same form never creates a second job
+  setNewJobType('Delivery');
+  ['jobCustName', 'jobCustContact', 'jobAddress', 'jobItemDesc', 'jobInstructions', 'jobRequiredDate'].forEach((id) => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('jobCategory').innerHTML = '<option value="">Choose…</option>' +
+    jobsData.categories.map((c) => '<option>' + escapeHtml(c) + '</option>').join('');
+  const branchWrap = document.getElementById('jobBranchWrap');
+  const branchSel = document.getElementById('jobBranch');
+  if (jobsData.role === 'Manager') {
+    branchWrap.hidden = true;
+  } else {
+    branchWrap.hidden = false;
+    branchSel.innerHTML = '<option value="">Choose…</option>' +
+      jobsData.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+  }
+  document.getElementById('jobRequiredDate').min = new Date().toISOString().slice(0, 10);
+  document.getElementById('jobNewError').textContent = '';
+  const btn = document.getElementById('jobNewSubmit');
+  btn.disabled = false; btn.textContent = 'Submit for approval';
+  document.getElementById('jobNewBackdrop').hidden = false;
+  document.getElementById('jobCustName').focus();
+}
+
+function closeNewJob() { document.getElementById('jobNewBackdrop').hidden = true; }
+
+async function submitNewJob() {
+  const errEl = document.getElementById('jobNewError');
+  const v = (id) => document.getElementById(id).value.trim();
+  const payload = {
+    requesterEmail: currentUser.email, type: newJobType, clientRequestId: newJobRequestId,
+    branch: v('jobBranch'), customerName: v('jobCustName'), customerContact: v('jobCustContact'), address: v('jobAddress'),
+    itemCategory: v('jobCategory'), itemDescription: v('jobItemDesc'), requiredDate: v('jobRequiredDate'), instructions: v('jobInstructions')
+  };
+  errEl.textContent = '';
+  if (jobsData.role !== 'Manager' && !payload.branch) { errEl.textContent = 'Choose the branch.'; return; }
+  if (!payload.customerName || !payload.customerContact || !payload.address) { errEl.textContent = 'Customer name, contact number and address are required.'; return; }
+  if (!payload.itemCategory || !payload.itemDescription) { errEl.textContent = 'Choose a category and describe the item.'; return; }
+  if (!payload.requiredDate) { errEl.textContent = 'Choose the required date.'; return; }
+
+  const btn = document.getElementById('jobNewSubmit');
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  const res = await apiPost('createJob', payload);
+  btn.disabled = false; btn.textContent = 'Submit for approval';
+  if (!res.success) {
+    errEl.textContent = res.networkError
+      ? 'Lost connection — it may have gone through. Press Submit again: it won\'t create a duplicate.'
+      : (res.error || 'Could not submit.');
+    return;
+  }
+  closeNewJob();
+  showJobsNotice(res.ref + ' was sent to Head Office for approval.' + (res.warning ? ' Note: ' + res.warning : ''));
+  document.getElementById('jobsStatus').value = 'open';
+  await loadJobs();
+}
+
+function showJobsNotice(text) {
+  const el = document.getElementById('jobsNotice');
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(showJobsNotice._t);
+  showJobsNotice._t = setTimeout(() => { el.hidden = true; }, 9000);
+}
+
+// ── Job detail ───────────────────────────────────────────────────────
+
+async function openJob(ref) {
+  bindJobsUi();
+  openJobRef = ref;
+  openJobData = null;
+  document.getElementById('jobTitle').textContent = ref;
+  document.getElementById('jobSubtitle').textContent = '';
+  document.getElementById('jobBody').innerHTML = '<p class="muted">Loading…</p>';
+  document.getElementById('jobBackdrop').hidden = false;
+  const res = await apiGet('job', { email: currentUser.email, ref: ref });
+  if (openJobRef !== ref) return;
+  if (!res.success) {
+    document.getElementById('jobBody').innerHTML = '<p class="error-text">' + escapeHtml(res.error || 'Could not load this job.') + '</p>';
+    return;
+  }
+  openJobData = res;
+  renderJob();
+  markBellRead({ ref: ref });
+}
+
+function closeJob() {
+  document.getElementById('jobBackdrop').hidden = true;
+  openJobRef = null;
+  openJobData = null;
+}
+
+function renderJob(activeAction) {
+  const j = openJobData.job;
+  document.getElementById('jobTitle').textContent = j.ref + ' · ' + j.type;
+  document.getElementById('jobSubtitle').textContent = j.branch + ' · logged ' + formatShortDateTime(j.createdAt);
+  const row = (label, value, html) => value ? '<div class="jd-row"><span>' + label + '</span><span>' + (html ? value : escapeHtml(value)) + '</span></div>' : '';
+  const tel = String(j.customerContact || '').replace(/[^\d+]/g, '');
+
+  let actionsHtml = '';
+  if (openJobData.actions.length) {
+    actionsHtml = '<div class="jd-actions">' + openJobData.actions.map((a) =>
+      '<button type="button" class="jd-action-btn' + (a.key === 'cancel' ? ' is-danger' : '') + (activeAction === a.key ? ' active' : '') +
+      '" data-action="' + a.key + '">' + escapeHtml(a.label) + '</button>').join('') + '</div>';
+    if (activeAction) actionsHtml += jobActionForm(activeAction, j);
+  }
+
+  const history = openJobData.history.slice().reverse().map((h) =>
+    '<li><span class="jh-when">' + escapeHtml(formatShortDateTime(h.timestamp)) + '</span>' +
+    '<span class="jh-what">' + (h.fromStatus ? escapeHtml(h.fromStatus) + ' → ' : '') + '<strong>' + escapeHtml(h.toStatus) + '</strong>' +
+    (h.notes ? '<span class="jh-notes">' + escapeHtml(h.notes) + '</span>' : '') + '</span>' +
+    '<span class="jh-by muted">' + escapeHtml(h.by) + '</span></li>').join('');
+
+  document.getElementById('jobBody').innerHTML =
+    '<div class="jd-status">' + jobStatusTag(j.status) + overdueTag(j) + '</div>' +
+    '<div class="jd-grid">' +
+      row('Customer', j.customerName) +
+      row('Contact', tel ? '<a href="tel:' + escapeAttr(tel) + '">' + escapeHtml(j.customerContact) + '</a>' : '', true) +
+      row('Address', j.address) +
+      row('Item', j.itemCategory + ' — ' + j.itemDescription) +
+      row('Required by', dayLabel(j.requiredDate)) +
+      row('Instructions', j.instructions) +
+      row('Driver', j.driverName ? j.driverName + (j.scheduledDate ? ' · ' + dayLabel(j.scheduledDate) : '') : '') +
+      row('Approved by', j.approvedBy ? j.approvedBy + ' · ' + formatShortDateTime(j.approvedAt) : '') +
+      row('Logged by', j.createdBy) +
+    '</div>' +
+    actionsHtml +
+    '<p class="error-text" id="jobActionError"></p>' +
+    '<h3 class="form-sub">History</h3><ul class="job-history">' + history + '</ul>';
+}
+
+function jobActionForm(key, j) {
+  const notes = (label, required) => '<label>' + label + (required ? '' : ' (optional)') +
+    ' <textarea id="jaNotes" rows="2"></textarea></label>';
+  let body = '';
+  let confirm = 'Confirm';
+  if (key === 'approve') {
+    body = '<p class="muted">Approve this ' + j.type.toLowerCase() + ' so it can be scheduled with a driver.</p>' + notes('Note', false);
+    confirm = 'Approve';
+  } else if (key === 'schedule') {
+    const drivers = openJobData.drivers || [];
+    if (!drivers.length) {
+      return '<div class="jd-form"><p class="muted">There are no drivers yet. Approve someone with the <strong>Driver</strong> role under Approvals first.</p></div>';
+    }
+    body = '<div class="grid-2"><label>Driver <select id="jaDriver"><option value="">Choose…</option>' +
+      drivers.map((d) => '<option value="' + escapeAttr(d.email) + '"' + (d.email === String(j.driverEmail).toLowerCase() ? ' selected' : '') + '>' +
+        escapeHtml(d.fullName) + '</option>').join('') + '</select></label>' +
+      '<label>Date <input type="date" id="jaDate" value="' + escapeAttr(j.scheduledDate || j.requiredDate || '') + '"></label></div>' +
+      notes('Note for the record', false);
+    confirm = j.status === 'Approved' ? 'Schedule' : 'Save new schedule';
+  } else if (key === 'hold') {
+    body = notes('Reason for putting it on hold', true);
+    confirm = 'Put on hold';
+  } else if (key === 'resume') {
+    body = '<p class="muted">Take this job off hold and carry on where it left off.</p>';
+    confirm = 'Resume';
+  } else if (key === 'cancel') {
+    body = '<p class="muted">Cancelled jobs stay in the history but can\'t be reopened.</p>' + notes('Reason for cancelling', true);
+    confirm = 'Cancel job';
+  }
+  return '<div class="jd-form">' + body +
+    '<div class="user-edit-actions"><button type="button" class="btn-secondary" data-form="back">Back</button>' +
+    '<button type="button" class="btn-primary' + (key === 'cancel' ? ' btn-danger' : '') + '" data-form="confirm" data-action="' + key + '">' + escapeHtml(confirm) + '</button></div></div>';
+}
+
+async function onJobBodyClick(e) {
+  const actionBtn = e.target.closest('.jd-action-btn');
+  if (actionBtn) { renderJob(actionBtn.dataset.action); return; }
+  const formBtn = e.target.closest('[data-form]');
+  if (!formBtn) return;
+  if (formBtn.dataset.form === 'back') { renderJob(); return; }
+
+  const key = formBtn.dataset.action;
+  const errEl = document.getElementById('jobActionError');
+  const notesEl = document.getElementById('jaNotes');
+  const payload = { requesterEmail: currentUser.email, ref: openJobRef, step: key, notes: notesEl ? notesEl.value.trim() : '' };
+  if (key === 'schedule') {
+    payload.driverEmail = document.getElementById('jaDriver').value;
+    payload.scheduledDate = document.getElementById('jaDate').value;
+    if (!payload.driverEmail || !payload.scheduledDate) { errEl.textContent = 'Choose a driver and a date.'; return; }
+  }
+  if ((key === 'hold' || key === 'cancel') && !payload.notes) { errEl.textContent = 'Please add a reason.'; return; }
+
+  formBtn.disabled = true; formBtn.textContent = 'Saving…';
+  const res = await apiPost('jobAction', payload);
+  if (!res.success) {
+    errEl.textContent = res.error || 'Could not save.';
+    formBtn.disabled = false; formBtn.textContent = 'Try again';
+    return;
+  }
+  const ref = openJobRef;
+  await openJob(ref);
+  if (res.warning) document.getElementById('jobActionError').textContent = res.warning;
+  loadJobs();
+}
+
+// Email links look like …/CashUp/#job=DEL-00012 — remember the job, then
+// tidy the address bar so a refresh doesn't reopen it.
+let linkedJobRef = (function () {
+  const m = /[#&]job=([A-Z]{3}-\d+)/.exec(location.hash || '');
+  return m ? m[1] : '';
+})();
+function takeLinkedJobRef() {
+  const ref = linkedJobRef;
+  linkedJobRef = '';
+  if (ref && history.replaceState) history.replaceState(null, '', location.pathname + location.search);
+  return ref;
+}
+window.addEventListener('hashchange', () => {
+  const m = /[#&]job=([A-Z]{3}-\d+)/.exec(location.hash || '');
+  if (m && currentUser && allowedPages().indexOf('deliveries') !== -1) {
+    linkedJobRef = m[1];
+    openPage('deliveries');
+    openJob(takeLinkedJobRef());
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// NOTIFICATIONS BELL
+// Checks for new notifications every 90 seconds while the app is open.
+// ─────────────────────────────────────────────────────────────────────
+
+let bellTimer = null;
+let bellItems = [];
+let bellBound = false;
+
+function startBell() {
+  stopBell();
+  const on = featureOn('deliveries');
+  document.getElementById('bellBtn').hidden = !on;
+  if (!on) return;
+  bindBell();
+  refreshBell();
+  bellTimer = setInterval(() => { if (document.visibilityState === 'visible') refreshBell(); }, 90000);
+}
+
+function stopBell() {
+  if (bellTimer) clearInterval(bellTimer);
+  bellTimer = null;
+  document.getElementById('bellBtn').hidden = true;
+  document.getElementById('bellPanel').hidden = true;
+}
+
+function bindBell() {
+  if (bellBound) return;
+  bellBound = true;
+  const btn = document.getElementById('bellBtn');
+  const panel = document.getElementById('bellPanel');
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    panel.hidden = !panel.hidden;
+    btn.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+    if (!panel.hidden) refreshBell();
+  });
+  document.addEventListener('click', (e) => {
+    if (!panel.hidden && !panel.contains(e.target) && e.target !== btn) { panel.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
+  });
+  document.getElementById('bellReadAll').addEventListener('click', () => markBellRead({ all: true }));
+  document.getElementById('bellList').addEventListener('click', (e) => {
+    const item = e.target.closest('.bell-item');
+    if (!item) return;
+    panel.hidden = true;
+    if (item.dataset.ref && allowedPages().indexOf('deliveries') !== -1) {
+      openPage('deliveries');
+      openJob(item.dataset.ref);
+    }
+  });
+}
+
+async function refreshBell() {
+  if (!currentUser) return;
+  const res = await apiGet('notifications', { email: currentUser.email });
+  if (!res.success) return;
+  bellItems = res.items || [];
+  const count = document.getElementById('bellCount');
+  count.textContent = res.unread > 9 ? '9+' : String(res.unread);
+  count.hidden = !res.unread;
+  document.getElementById('bellBtn').setAttribute('aria-label', 'Notifications' + (res.unread ? ' (' + res.unread + ' unread)' : ''));
+  document.getElementById('bellList').innerHTML = bellItems.length
+    ? bellItems.map((n) =>
+        '<button type="button" class="bell-item' + (n.unread ? ' is-unread' : '') + '" data-ref="' + escapeAttr(n.ref) + '">' +
+          '<span class="bell-msg">' + escapeHtml(n.message) + '</span>' +
+          '<span class="bell-when">' + escapeHtml(formatShortDateTime(n.timestamp)) + '</span></button>').join('')
+    : '<p class="muted bell-empty">No notifications yet.</p>';
+}
+
+async function markBellRead(opts) {
+  if (!currentUser || !featureOn('deliveries')) return;
+  if (opts.ref && !bellItems.some((n) => n.unread && n.ref === opts.ref)) return;
+  await apiPost('markNotificationsRead', Object.assign({ requesterEmail: currentUser.email }, opts));
+  refreshBell();
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // DEVELOPER TAB — bundle switch, Pro feature ticks, developers, password
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1734,6 +2224,7 @@ async function saveDevSettingsClick() {
   const pro = devDraft.bundle === 'Pro';
   devState.features.forEach((f) => { currentUser.features[f.key] = pro && !!devDraft.ticks[f.key]; });
   buildNav();
+  startBell();
   openPage('developer');
   msg.textContent = 'Saved. Everyone else sees the change the next time they open or refresh the app.';
   msg.className = 'dev-msg ok-text';
