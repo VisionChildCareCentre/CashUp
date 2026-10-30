@@ -352,6 +352,38 @@
     </div>
   </section>
 
+  <!-- ─── DOWNLOADS (Pro: downloads) ────────────────────────── -->
+  <section id="view-downloads" class="view" hidden>
+    <div class="card">
+      <h1>Downloads</h1>
+      <p class="muted">Download your records as CSV files (open in Excel or Google Sheets), or everything at once as one Excel workbook — handy for year-end and your bookkeeper.</p>
+      <div class="fin-filters">
+        <label>Period
+          <select id="dlPeriod">
+            <option value="thisMonth" selected>This Month</option>
+            <option value="lastMonth">Last Month</option>
+            <option value="last3Months">Last 3 Months</option>
+            <option value="last6Months">Last 6 Months</option>
+            <option value="thisYear">This Year</option>
+            <option value="lastYear">Last Year</option>
+            <option value="all">All time</option>
+            <option value="custom">Custom Date Range</option>
+          </select>
+        </label>
+        <label>Showing
+          <select id="dlBranch"><option value="">Everything</option></select>
+        </label>
+        <label id="dlFromWrap" hidden>From <input type="date" id="dlFrom"></label>
+        <label id="dlToWrap" hidden>To <input type="date" id="dlTo"></label>
+      </div>
+      <button type="button" id="dlAllBtn" class="btn-primary dl-all-btn">Download everything (Excel)</button>
+      <p class="muted dl-status" id="dlStatus"></p>
+      <p class="error-text" id="dlError" hidden></p>
+      <div id="dlList" class="dl-list"><p class="muted">Loading…</p></div>
+      <p class="muted fin-footnote">Amounts are plain numbers and dates are year-month-day so they sort and add up in Excel. Receipts and PDFs stay in the app — the files show "Yes" where one is attached. Customer names, numbers and addresses are not included.</p>
+    </div>
+  </section>
+
   <!-- ─── DEVELOPER (developers only) ──────────────────────── -->
   <section id="view-developer" class="view" hidden>
     <div class="card">
@@ -799,6 +831,24 @@
       <button type="button" class="modal-close" id="finDrillClose" aria-label="Close">&times;</button>
     </div>
     <div class="modal-body" id="finDrillBody"></div>
+  </div>
+</div>
+
+<!-- ─── FILE VIEWER (receipts, proof photos, PDFs — in-app only) ─── -->
+<div id="fileBackdrop" class="modal-backdrop" hidden>
+  <div class="modal file-modal" role="dialog" aria-modal="true" aria-labelledby="fileTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="fileTitle" style="margin:0;">File</h2>
+        <p class="muted" id="fileSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="fileClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="file-actions">
+      <button type="button" class="file-act-btn" id="filePrint" disabled>Print</button>
+      <button type="button" class="file-act-btn" id="fileDownload" disabled>Download</button>
+    </div>
+    <div class="modal-body file-body" id="fileBody"></div>
   </div>
 </div>
 

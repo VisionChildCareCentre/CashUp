@@ -769,3 +769,41 @@ textarea { min-height: 60px; resize: vertical; }
 @keyframes modal-nudge { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
 .modal.modal-nudge { animation: modal-nudge .25s ease-in-out 2; }
 @media (prefers-reduced-motion: reduce) { .modal.modal-nudge { animation: none; box-shadow: 0 0 0 3px var(--primary); } }
+
+/* ─── In-app file viewer (receipts, proof photos, PDFs) ──────────── */
+.file-link {
+  background: none; border: none; padding: 2px 0; font: inherit; font-weight: 700;
+  color: var(--magenta); cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.file-link:hover { color: var(--primary); }
+#fileBackdrop { z-index: 1100; } /* opens on top of other pop-ups */
+.file-modal { max-width: 900px; }
+.file-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+.file-act-btn {
+  border: 1px solid var(--primary); background: #fff; color: var(--primary); border-radius: 8px;
+  padding: 8px 14px; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+}
+.file-act-btn:hover:not(:disabled) { background: var(--primary); color: #fff; }
+.file-act-btn:disabled { opacity: .45; cursor: default; }
+.file-body { min-height: 120px; }
+.file-frame { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: 8px; background: #f4f6f9; }
+.file-img { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; border-radius: 8px; }
+.file-pdf-hint { font-size: 12px; margin: 6px 0 0; }
+.file-loading { text-align: center; padding: 30px 0; }
+.print-frame { position: fixed; right: 0; bottom: 0; width: 0; height: 0; border: 0; visibility: hidden; }
+
+/* ─── Downloads ──────────────────────────────────────────────────── */
+.dl-all-btn { width: auto; margin: 6px 0 4px; }
+.dl-status { min-height: 18px; font-size: 13px; }
+.dl-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.dl-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.dl-item strong { display: block; font-size: 15px; }
+.dl-item .muted { display: block; font-size: 13px; margin-top: 2px; }
+.dl-item .file-act-btn { flex: none; min-width: 64px; }
+@media (max-width: 560px) {
+  .dl-all-btn { width: 100%; }
+  .file-frame { height: 60vh; }
+}

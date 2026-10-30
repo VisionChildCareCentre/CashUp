@@ -87,7 +87,7 @@ async function fetchWithRetry(doFetch, attempts) {
 // ─────────────────────────────────────────────────────────────────────
 
 const views = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'manager', 'shopexp', 'submitted', 'admin',
-  'backoffice', 'deliveries', 'hoexp', 'developer', 'nopages', 'loading'];
+  'backoffice', 'deliveries', 'hoexp', 'downloads', 'developer', 'nopages', 'loading'];
 const NAVLESS_VIEWS = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'nopages', 'loading'];
 function showView(name) {
   views.forEach((v) => {
@@ -213,13 +213,14 @@ const PAGES = {
   backoffice:  { label: 'Submissions' },
   deliveries:  { label: 'Deliveries', feature: 'deliveries' },
   hoexp:       { label: 'Head Office Finance', feature: 'hoExpenses' },
+  downloads:   { label: 'Downloads', feature: 'downloads' },
   developer:   { label: 'Developer' }
 };
 const ROLE_PAGES = {
   Manager:    ['cashup', 'shopexp', 'deliveries'],
-  BackOffice: ['backoffice', 'deliveries', 'hoexp'],
-  Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp'],
-  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'developer'],
+  BackOffice: ['backoffice', 'deliveries', 'hoexp', 'downloads'],
+  Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'downloads'],
+  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'downloads', 'developer'],
   Driver:     ['deliveries']
 };
 const ROLE_HOME = { Manager: 'cashup', BackOffice: 'backoffice', Admin: 'approvals', Developer: 'approvals', Driver: 'deliveries' };
@@ -282,6 +283,10 @@ function openPage(page) {
     case 'hoexp':
       showView('hoexp');
       loadFinancePage();
+      break;
+    case 'downloads':
+      showView('downloads');
+      loadDownloadsPage();
       break;
     case 'developer':
       showView('developer');
@@ -825,13 +830,13 @@ async function loadExpenseSubmissions(listEl, email, branch) {
           '<div class="muted expense-sub-meta">Submitted ' + escapeHtml(formatShortDateTime(sub.submittedAt)) +
           (sub.submittedBy ? ' by ' + escapeHtml(sub.submittedBy) : '') + '</div></div>' +
         '<div class="expense-sub-total"><strong>' + rand(sub.total) + '</strong>' +
-          (sub.pdfUrl ? '<a href="' + escapeAttr(sub.pdfUrl) + '" target="_blank" rel="noopener">PDF</a>' : '') + '</div>' +
+          fileButton(sub.pdfFile, 'PDF') + '</div>' +
       '</div>' +
       '<ul class="expense-sub-lines">' + sub.lines.map((l) =>
         '<li><span class="exp-l-desc">' + escapeHtml(l.description) + '</span>' +
         '<span class="exp-l-type">' + escapeHtml(l.type) + '</span>' +
         '<span class="exp-l-amt">' + rand(l.amount) + '</span>' +
-        (l.receiptUrl ? '<a href="' + escapeAttr(l.receiptUrl) + '" target="_blank" rel="noopener">Receipt</a>' : '<span class="muted">No receipt</span>') +
+        (l.receiptFile ? fileButton(l.receiptFile, 'Receipt') : '<span class="muted">No receipt</span>') +
         '</li>').join('') +
       '</ul>' +
     '</div>'
@@ -982,7 +987,7 @@ async function openShortOverModal() {
         '<div class="short-over-row-explain' + (explain ? '' : ' is-empty') + '">' +
           (explain ? escapeHtml(explain) : 'No explanation recorded.') +
         '</div>' +
-        (r.pdfUrl ? '<div style="margin-top:6px;"><a href="' + r.pdfUrl + '" target="_blank" style="font-size:12px;font-weight:700;">View PDF</a></div>' : '') +
+        (r.pdfFile ? '<div style="margin-top:6px;">' + fileButton(r.pdfFile, 'View PDF') + '</div>' : '') +
       '</div>'
     );
   }).join('');
@@ -1330,7 +1335,7 @@ async function loadAdminSubmissions(adminEmail) {
     div.className = 'recent-row';
     div.innerHTML =
       '<span>' + escapeHtml(s.branch) + ' — ' + formatDateTime(s.timestamp) + '</span>' +
-      '<span>' + (s.pdfUrl ? '<a href="' + s.pdfUrl + '" target="_blank">PDF</a>' : '') + '</span>';
+      '<span>' + fileButton(s.pdfFile, 'PDF') + '</span>';
     listEl.appendChild(div);
   });
 }
@@ -1701,7 +1706,7 @@ async function loadBackOfficeView(user) {
     div.className = 'recent-row';
     div.innerHTML =
       '<span>' + escapeHtml(s.branch) + ' — ' + formatDateTime(s.timestamp) + '</span>' +
-      '<span>' + (s.pdfUrl ? '<a href="' + s.pdfUrl + '" target="_blank">PDF</a>' : '') + '</span>';
+      '<span>' + fileButton(s.pdfFile, 'PDF') + '</span>';
     listEl.appendChild(div);
   });
 }
@@ -2128,7 +2133,7 @@ function renderJob(activeAction) {
       row('Approved by', j.approvedBy ? j.approvedBy + ' · ' + formatShortDateTime(j.approvedAt) : '') +
       row('Logged by', j.createdBy) +
       row('Completed', j.completedAt ? (openJobData.completedByName || j.completedBy) + ' · ' + formatShortDateTime(j.completedAt) : '') +
-      row('Proof', j.proofUrl ? '<a href="' + escapeAttr(j.proofUrl) + '" target="_blank" rel="noopener">View signed delivery note</a>' : '', true) +
+      row('Proof', j.proofFile ? fileButton(j.proofFile, 'View signed delivery note') : '', true) +
       row('Driver\'s note', j.completionNotes) +
       row('Last failed attempt', j.status !== 'Completed' ? j.lastFailReason : '') +
     '</div>') +
@@ -2644,7 +2649,7 @@ function finLineHtml(l) {
     '</div>' +
     '<div class="fin-line-side">' +
       '<span class="fin-line-amt ' + (l.kind === 'Income' ? 'fin-pos' : '') + '">' + (l.kind === 'Income' ? '+' : '') + rand(l.amount) + '</span>' +
-      (l.receiptUrl ? '<a href="' + escapeAttr(l.receiptUrl) + '" target="_blank" rel="noopener">' + (l.source === 'Cash-up' ? 'PDF' : 'Receipt') + '</a>' : '') +
+      fileButton(l.file, l.source === 'Cash-up' ? 'PDF' : 'Receipt') +
       (canEdit ? '<button type="button" class="link-btn fin-edit" data-ref="' + escapeAttr(l.ref) + '">Edit</button>' : '') +
     '</div></div>';
 }
@@ -2732,8 +2737,8 @@ function openFinEntry(line, kind) {
     fillSubSelect(document.getElementById('finSub'), line.majorKey, false, line.subId);
   }
   const info = document.getElementById('finReceiptInfo');
-  info.hidden = !(line && line.receiptUrl);
-  info.innerHTML = line && line.receiptUrl ? 'Current receipt: <a href="' + escapeAttr(line.receiptUrl) + '" target="_blank" rel="noopener">view</a>. Choose a new file to replace it.' : '';
+  info.hidden = !(line && line.file);
+  info.innerHTML = line && line.file ? 'Current receipt: ' + fileButton(line.file, 'view') + '. Choose a new file to replace it.' : '';
   document.getElementById('finRepeatWrap').hidden = !!line;
   document.getElementById('finRepeat').checked = false;
   document.getElementById('finRepeatDayWrap').hidden = true;
@@ -2924,6 +2929,264 @@ async function onFinCatClick(e) {
   finShowError('');
   await ensureFinanceSetup(true);
   renderFinCategories();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// FILE VIEWER — receipts, proof photos and PDFs open inside the app.
+// The server only hands a file over if the signed-in role may see that
+// record; there are no shareable Drive links. Print and Download included.
+// ─────────────────────────────────────────────────────────────────────
+
+let fileView = null; // { blobUrl, mimeType, name }
+
+// A small button that opens a file in the viewer. `ref` is what the server
+// sent, e.g. { t: 'cashup', r: 'VCU-…' } — or null when there's no file.
+function fileButton(ref, label) {
+  if (!ref) return '';
+  return '<button type="button" class="file-link" data-file-t="' + escapeAttr(ref.t) + '" data-file-r="' + escapeAttr(ref.r) + '"' +
+    (ref.l ? ' data-file-l="' + escapeAttr(ref.l) + '"' : '') + '>' + escapeHtml(label) + '</button>';
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.file-link');
+  if (!btn) return;
+  e.preventDefault();
+  openFileViewer({ t: btn.dataset.fileT, r: btn.dataset.fileR, l: btn.dataset.fileL }, btn.textContent);
+});
+
+async function openFileViewer(ref, label) {
+  closeFileViewer();
+  document.getElementById('fileTitle').textContent = label || 'File';
+  document.getElementById('fileSubtitle').textContent = 'Loading…';
+  document.getElementById('fileBody').innerHTML = '<p class="muted file-loading">Opening the file…</p>';
+  document.getElementById('filePrint').disabled = true;
+  document.getElementById('fileDownload').disabled = true;
+  document.getElementById('fileBackdrop').hidden = false;
+  const params = { email: currentUser.email, t: ref.t, r: ref.r };
+  if (ref.l) params.l = ref.l;
+  const res = await apiGet('file', params);
+  if (document.getElementById('fileBackdrop').hidden) return;
+  if (!res.success) {
+    document.getElementById('fileSubtitle').textContent = '';
+    document.getElementById('fileBody').innerHTML = '<p class="error-text">' + escapeHtml(res.error === 'Unknown action'
+      ? 'Opening files in the app needs the updated Apps Script. Redeploy it, then try again.' : (res.error || 'Could not open the file.')) + '</p>';
+    return;
+  }
+  const bytes = Uint8Array.from(atob(res.data), (c) => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: res.mimeType });
+  fileView = { blobUrl: URL.createObjectURL(blob), mimeType: res.mimeType, name: res.name };
+  document.getElementById('fileTitle').textContent = res.title || label;
+  document.getElementById('fileSubtitle').textContent = res.name;
+  const body = document.getElementById('fileBody');
+  if (res.mimeType === 'application/pdf') {
+    body.innerHTML = '<iframe class="file-frame" title="' + escapeAttr(res.name) + '" src="' + fileView.blobUrl + '"></iframe>' +
+      '<p class="muted file-pdf-hint">PDF not showing on your phone? Use Download to open it.</p>';
+  } else if (/^image\//.test(res.mimeType)) {
+    body.innerHTML = '<img class="file-img" alt="' + escapeAttr(res.name) + '" src="' + fileView.blobUrl + '">';
+  } else {
+    body.innerHTML = '<p class="muted">This file can\'t be shown here — use Download.</p>';
+  }
+  document.getElementById('filePrint').disabled = false;
+  document.getElementById('fileDownload').disabled = false;
+}
+
+function closeFileViewer() {
+  document.getElementById('fileBackdrop').hidden = true;
+  document.getElementById('fileBody').innerHTML = '';
+  if (fileView) { setTimeout(((u) => () => URL.revokeObjectURL(u))(fileView.blobUrl), 60000); fileView = null; }
+}
+
+function printFile() {
+  if (!fileView) return;
+  const frame = document.createElement('iframe');
+  frame.className = 'print-frame';
+  frame.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(frame);
+  const done = () => setTimeout(() => frame.remove(), 60000);
+  if (fileView.mimeType === 'application/pdf') {
+    frame.onload = () => {
+      try { frame.contentWindow.focus(); frame.contentWindow.print(); }
+      catch (err) { window.open(fileView.blobUrl, '_blank'); } // some phones can't print a PDF from inside a page
+      done();
+    };
+    frame.src = fileView.blobUrl;
+  } else {
+    const doc = frame.contentWindow.document;
+    doc.open();
+    doc.write('<!doctype html><html><head><title>' + escapeHtml(fileView.name) + '</title><style>@page{margin:10mm}' +
+      'body{margin:0;text-align:center}img{max-width:100%;max-height:270mm}</style></head><body>' +
+      '<img src="' + fileView.blobUrl + '" onload="setTimeout(function(){window.focus();window.print();},50)"></body></html>');
+    doc.close();
+    done();
+  }
+}
+
+function downloadBlob(blobUrl, name) {
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+document.getElementById('fileClose').addEventListener('click', closeFileViewer);
+document.getElementById('filePrint').addEventListener('click', printFile);
+document.getElementById('fileDownload').addEventListener('click', () => { if (fileView) downloadBlob(fileView.blobUrl, fileView.name); });
+document.getElementById('fileBackdrop').addEventListener('click', (e) => { if (e.target.id === 'fileBackdrop') closeFileViewer(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.getElementById('fileBackdrop').hidden) { e.stopImmediatePropagation(); closeFileViewer(); }
+}, true);
+
+// ─────────────────────────────────────────────────────────────────────
+// DOWNLOADS (Pro feature "downloads") — CSV per dataset + Excel workbook
+// ─────────────────────────────────────────────────────────────────────
+
+let dlCatalog = null;
+let dlBound = false;
+
+async function loadDownloadsPage() {
+  if (!dlBound) {
+    dlBound = true;
+    ['dlPeriod', 'dlBranch'].forEach((id) => document.getElementById(id).addEventListener('change', () => {
+      const custom = document.getElementById('dlPeriod').value === 'custom';
+      document.getElementById('dlFromWrap').hidden = !custom;
+      document.getElementById('dlToWrap').hidden = !custom;
+    }));
+    document.getElementById('dlList').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-dl]');
+      if (b) downloadCsv(b.dataset.dl, b);
+    });
+    document.getElementById('dlAllBtn').addEventListener('click', downloadWorkbook);
+  }
+  const err = document.getElementById('dlError');
+  err.hidden = true;
+  const res = await apiGet('exportCatalog', { email: currentUser.email });
+  if (!res.success) {
+    err.textContent = res.error === 'Unknown action' ? 'Downloads need the updated Apps Script. Redeploy it, then refresh.' : res.error;
+    err.hidden = false;
+    document.getElementById('dlList').innerHTML = '';
+    return;
+  }
+  dlCatalog = res;
+  const branchSel = document.getElementById('dlBranch');
+  if (branchSel.options.length < 2) {
+    const br = await apiGet('branches', {});
+    const branches = (br.success && br.branches) || [];
+    branchSel.innerHTML = '<option value="">Everything</option><option value="Head Office">Head Office only</option>' +
+      branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+  }
+  document.getElementById('dlList').innerHTML = res.datasets.map((d) =>
+    '<div class="dl-item"><div><strong>' + escapeHtml(d.title) + '</strong><span class="muted">' + escapeHtml(d.description) + '</span></div>' +
+    '<button type="button" class="file-act-btn" data-dl="' + escapeAttr(d.key) + '">CSV</button></div>').join('');
+}
+
+function dlParams(key) {
+  const p = { email: currentUser.email, dataset: key, branch: document.getElementById('dlBranch').value };
+  const period = document.getElementById('dlPeriod').value;
+  if (period === 'all') { p.period = 'custom'; p.from = '2000-01-01'; p.to = localToday(); }
+  else if (period === 'custom') {
+    p.period = 'custom'; p.from = document.getElementById('dlFrom').value; p.to = document.getElementById('dlTo').value;
+    if (!p.from || !p.to) return null;
+  } else { p.period = period; }
+  return p;
+}
+
+function dlFileName(res, ext) {
+  const scope = res.branch ? '_' + res.branch.replace(/[^A-Za-z0-9]+/g, '') : '';
+  return (res.name || 'Export') + '_' + (res.file || res.key) + scope + '_' + res.range.from + '_to_' + res.range.to + '.' + ext;
+}
+
+function csvCell(v, type) {
+  if (v === null || v === undefined) v = '';
+  if (type === 'money' && v !== '') v = (Number(v) || 0).toFixed(2);
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+async function fetchExport(key) {
+  const p = dlParams(key);
+  if (!p) { dlShowError('Choose both dates for a custom range.'); return null; }
+  const res = await apiGet('export', p);
+  if (!res.success) { dlShowError(res.error || 'Could not prepare the download.'); return null; }
+  return res;
+}
+function dlShowError(text) {
+  const err = document.getElementById('dlError');
+  err.textContent = text; err.hidden = !text;
+}
+
+async function downloadCsv(key, btn) {
+  dlShowError('');
+  btn.disabled = true; btn.textContent = 'Preparing…';
+  const res = await fetchExport(key);
+  btn.disabled = false; btn.textContent = 'CSV';
+  if (!res) return;
+  const lines = [res.columns.map((c) => csvCell(c.name)).join(',')]
+    .concat(res.rows.map((r) => r.map((v, i) => csvCell(v, res.columns[i].type)).join(',')));
+  // The BOM at the start lets Excel read names, "›" and accents correctly.
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  downloadBlob(url, dlFileName(res, 'csv'));
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  document.getElementById('dlStatus').textContent = res.title + ': ' + res.rows.length + ' row' + (res.rows.length === 1 ? '' : 's') + ' downloaded.';
+}
+
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector('script[data-src="' + src + '"]')) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src; s.dataset.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Could not load the Excel tool. Check your connection.'));
+    document.head.appendChild(s);
+  });
+}
+
+async function downloadWorkbook() {
+  dlShowError('');
+  if (!dlCatalog || !dlCatalog.datasets.length) return;
+  const btn = document.getElementById('dlAllBtn');
+  const status = document.getElementById('dlStatus');
+  btn.disabled = true;
+  try {
+    status.textContent = 'Loading the Excel tool…';
+    await loadScriptOnce('vendor/xlsx.full.min.js');
+    const wb = XLSX.utils.book_new();
+    let first = null;
+    for (let i = 0; i < dlCatalog.datasets.length; i++) {
+      const d = dlCatalog.datasets[i];
+      status.textContent = 'Preparing ' + d.title + ' (' + (i + 1) + ' of ' + dlCatalog.datasets.length + ')…';
+      const res = await fetchExport(d.key);
+      if (!res) throw new Error('Stopped: ' + d.title + ' could not be prepared.');
+      first = first || res;
+      const aoa = [res.columns.map((c) => c.name)].concat(res.rows.map((r) => r.map((v, ci) => {
+        const t = res.columns[ci].type;
+        if ((t === 'money' || t === 'int') && v !== '' && v !== null && v !== undefined && !isNaN(Number(v))) return Number(v);
+        return v === null || v === undefined ? '' : v;
+      })));
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      // Money columns show two decimals; columns sized to their content.
+      res.columns.forEach((c, ci) => {
+        if (c.type !== 'money') return;
+        for (let ri = 1; ri < aoa.length; ri++) {
+          const cell = ws[XLSX.utils.encode_cell({ r: ri, c: ci })];
+          if (cell && cell.t === 'n') cell.z = '#,##0.00';
+        }
+      });
+      ws['!cols'] = res.columns.map((c, ci) => ({ wch: Math.min(40, Math.max(c.name.length, ...aoa.slice(1, 200).map((r) => String(r[ci]).length)) + 2) }));
+      ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+      XLSX.utils.book_append_sheet(wb, ws, d.title.replace(/[\\/?*[\]:]/g, '').slice(0, 31));
+    }
+    const name = dlFileName(Object.assign({}, first, { file: 'Everything' }), 'xlsx');
+    XLSX.writeFile(wb, name);
+    status.textContent = 'Downloaded ' + name + ' (' + dlCatalog.datasets.length + ' sheets).';
+  } catch (err) {
+    status.textContent = '';
+    dlShowError(err.message || 'Could not build the Excel file.');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
