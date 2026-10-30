@@ -101,6 +101,7 @@ let currentUser = null; // { email, fullName, role, branch }
 
 document.getElementById('switchUserBtn').addEventListener('click', () => {
   stopBell();
+  finSetup = null;
   if (getDevToken()) { apiPost('devLogout', {}); setDevToken(''); }
   localStorage.removeItem(STORAGE_KEY);
   currentUser = null;
@@ -211,12 +212,12 @@ const PAGES = {
   dashboard:   { label: 'Dashboard' },
   backoffice:  { label: 'Submissions' },
   deliveries:  { label: 'Deliveries', feature: 'deliveries' },
-  hoexp:       { label: 'Head Office Expenses', feature: 'hoExpenses' },
+  hoexp:       { label: 'Head Office Finance', feature: 'hoExpenses' },
   developer:   { label: 'Developer' }
 };
 const ROLE_PAGES = {
   Manager:    ['cashup', 'shopexp', 'deliveries'],
-  BackOffice: ['backoffice', 'deliveries'],
+  BackOffice: ['backoffice', 'deliveries', 'hoexp'],
   Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp'],
   Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'developer'],
   Driver:     ['deliveries']
@@ -262,6 +263,7 @@ function openPage(page) {
       break;
     case 'shopexp':
       showView('shopexp');
+      ensureFinanceSetup();
       break;
     case 'approvals':
     case 'submissions':
@@ -279,6 +281,7 @@ function openPage(page) {
       break;
     case 'hoexp':
       showView('hoexp');
+      loadFinancePage();
       break;
     case 'developer':
       showView('developer');
@@ -694,13 +697,15 @@ function addExpenseLine() {
       '<label>Amount (R) <input type="number" step="0.01" min="0" class="exp-amount" inputmode="decimal"></label>' +
     '</div>' +
     '<label>Description <input type="text" class="exp-desc" maxlength="200" placeholder="What was paid for?"></label>' +
-    '<label>Type <select class="exp-type">' + EXPENSE_TYPES.map((t) => '<option>' + escapeHtml(t) + '</option>').join('') + '</select></label>' +
+    shopExpenseCategoryHtml() +
     '<label>Receipt photo <input type="file" class="exp-file" accept="image/*" capture="environment"></label>' +
     '<div class="exp-preview-wrap" hidden><img class="exp-preview" alt="Receipt preview">' +
       '<button type="button" class="link-btn exp-photo-remove">Remove photo</button></div>' +
     '<p class="error-text exp-file-error"></p>';
 
   div.querySelector('.exp-amount').addEventListener('input', recalcShopExpenses);
+  const majorSel = div.querySelector('.exp-major');
+  if (majorSel) majorSel.addEventListener('change', () => fillSubSelect(div.querySelector('.exp-sub'), majorSel.value, false));
   div.querySelector('.exp-desc').addEventListener('input', updateShopExpBadge);
   div.querySelector('.expense-remove').addEventListener('click', () => {
     expenseReceipts.delete(id);
@@ -733,6 +738,20 @@ function addExpenseLine() {
   renumberExpenseLines();
   recalcShopExpenses();
   div.querySelector('.exp-desc').focus();
+}
+
+// Category + subcategory for a branch shop expense, from the shared list
+// Admins manage under Head Office Finance → Categories.
+function shopExpenseCategoryHtml() {
+  if (!finSetup) {
+    return '<label>Type <select class="exp-type">' + EXPENSE_TYPES.map((t) => '<option>' + escapeHtml(t) + '</option>').join('') + '</select></label>';
+  }
+  const majors = finSetup.majors.filter((m) => m.kind === 'Expense' && !m.hidden && m.subs.some((x) => x.active));
+  return '<div class="grid-2">' +
+    '<label>Category <select class="exp-major"><option value="">Choose…</option>' +
+      majors.map((m) => '<option value="' + escapeAttr(m.key) + '">' + escapeHtml(m.name) + '</option>').join('') + '</select></label>' +
+    '<label>Subcategory <select class="exp-sub"><option value="">Choose a category first</option></select></label>' +
+    '</div>';
 }
 
 function renumberExpenseLines() {
@@ -768,7 +787,15 @@ function collectShopExpenses() {
     const receiptImage = expenseReceipts.get(el.dataset.id) || '';
     if (!description && !amount && !receiptImage) continue;
     if (!description || amount <= 0) return { error: 'Shop expense ' + (i + 1) + ' needs a description and an amount.' };
-    lines.push({ date: el.querySelector('.exp-date').value, description, amount, type: el.querySelector('.exp-type').value, receiptImage });
+    const line = { date: el.querySelector('.exp-date').value, description, amount, receiptImage };
+    const subSel = el.querySelector('.exp-sub');
+    if (subSel) {
+      if (!subSel.value) return { error: 'Choose a category for shop expense ' + (i + 1) + '.' };
+      line.subId = subSel.value;
+    } else {
+      line.type = el.querySelector('.exp-type').value; // backend not updated yet
+    }
+    lines.push(line);
   }
   return { lines };
 }
@@ -780,7 +807,10 @@ function clearShopExpenses() {
   recalcShopExpenses();
 }
 
-document.getElementById('addExpenseBtn').addEventListener('click', addExpenseLine);
+document.getElementById('addExpenseBtn').addEventListener('click', async () => {
+  if (!finSetup && featureOn('shopExpenses')) await ensureFinanceSetup();
+  addExpenseLine();
+});
 
 // Shared renderer for Shop expense submissions (Admin Submissions tab and Back Office).
 async function loadExpenseSubmissions(listEl, email, branch) {
@@ -2397,6 +2427,503 @@ async function markBellRead(opts) {
   if (opts.ref && !bellItems.some((n) => n.unread && n.ref === opts.ref)) return;
   await apiPost('markNotificationsRead', Object.assign({ requesterEmail: currentUser.email }, opts));
   refreshBell();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// HEAD OFFICE FINANCE (Pro feature "hoExpenses") + shared categories
+// Overview (drill down: category → subcategory → entries), Head Office
+// entries, repeat-monthly items due, and category management (Admins).
+// ─────────────────────────────────────────────────────────────────────
+
+let finSetup = null;          // categories, branches, permissions
+let finSetupLoading = null;
+let finUiBound = false;
+let finTab = 'overview';
+let finCatKind = 'Expense';
+let finEntry = null;          // entry being edited (null = new)
+let finEntryKind = 'Expense';
+let finEntryRequestId = '';
+let finReceiptData = '';
+let finSummary = null;
+const finOpenMajors = {};
+
+async function ensureFinanceSetup(force) {
+  if (finSetup && !force) return finSetup;
+  if (finSetupLoading && !force) return finSetupLoading;
+  finSetupLoading = apiGet('financeSetup', { email: currentUser.email }).then((res) => {
+    finSetupLoading = null;
+    if (res.success) finSetup = res;
+    return finSetup;
+  });
+  return finSetupLoading;
+}
+
+function finMajorByKey(key) { return finSetup ? finSetup.majors.filter((m) => m.key === key)[0] : null; }
+
+function fillSubSelect(sel, majorKey, includeHidden, selected) {
+  const m = finMajorByKey(majorKey);
+  const subs = m ? m.subs.filter((x) => x.active || includeHidden || x.id === selected) : [];
+  sel.innerHTML = '<option value="">' + (m ? 'Choose…' : 'Choose a category first') + '</option>' +
+    subs.map((x) => '<option value="' + escapeAttr(x.id) + '"' + (x.id === selected ? ' selected' : '') + '>' +
+      escapeHtml(x.name) + (x.active ? '' : ' (hidden)') + '</option>').join('');
+}
+
+function finShowNotice(text) {
+  const el = document.getElementById('finNotice');
+  el.textContent = text; el.hidden = false;
+  clearTimeout(finShowNotice._t);
+  finShowNotice._t = setTimeout(() => { el.hidden = true; }, 8000);
+}
+function finShowError(text) {
+  const el = document.getElementById('finError');
+  el.textContent = text || ''; el.hidden = !text;
+}
+
+function bindFinanceUi() {
+  if (finUiBound) return;
+  finUiBound = true;
+  document.querySelectorAll('#finTabs button').forEach((b) => b.addEventListener('click', () => setFinTab(b.dataset.fin)));
+  ['finPeriod', 'finBranch', 'finFrom', 'finTo'].forEach((id) => document.getElementById(id).addEventListener('change', () => {
+    const custom = document.getElementById('finPeriod').value === 'custom';
+    document.getElementById('finFromWrap').hidden = !custom;
+    document.getElementById('finToWrap').hidden = !custom;
+    loadFinanceOverview();
+  }));
+  ['finEntryMonth', 'finEntryKind'].forEach((id) => document.getElementById(id).addEventListener('change', loadFinanceEntries));
+  document.getElementById('finAddExpense').addEventListener('click', () => openFinEntry(null, 'Expense'));
+  document.getElementById('finAddIncome').addEventListener('click', () => openFinEntry(null, 'Income'));
+  document.querySelectorAll('#finCatKind button').forEach((b) => b.addEventListener('click', () => {
+    finCatKind = b.dataset.kind;
+    document.querySelectorAll('#finCatKind button').forEach((x) => x.classList.toggle('active', x === b));
+    renderFinCategories();
+  }));
+
+  // Overview: expand a category / open a subcategory's entries
+  ['finExpenseMajors', 'finIncomeMajors'].forEach((id) => document.getElementById(id).addEventListener('click', (e) => {
+    const sub = e.target.closest('[data-sub]');
+    if (sub) { openFinDrill(sub.dataset.major, sub.dataset.sub); return; }
+    const all = e.target.closest('[data-all]');
+    if (all) { openFinDrill(all.dataset.all, ''); return; }
+    const major = e.target.closest('[data-major-toggle]');
+    if (major) { const k = major.dataset.majorToggle; finOpenMajors[k] = !finOpenMajors[k]; renderFinOverview(); }
+  }));
+  document.getElementById('finEntryList').addEventListener('click', onFinLineClick);
+  document.getElementById('finDrillBody').addEventListener('click', onFinLineClick);
+  document.getElementById('finDueList').addEventListener('click', onFinDueClick);
+  document.getElementById('finRecList').addEventListener('click', onFinDueClick);
+  document.getElementById('finCatList').addEventListener('click', onFinCatClick);
+
+  // Entry form
+  document.querySelectorAll('#finEntryBackdrop .seg button').forEach((b) => b.addEventListener('click', () => setFinEntryKind(b.dataset.kind)));
+  document.getElementById('finMajor').addEventListener('change', (e) => fillSubSelect(document.getElementById('finSub'), e.target.value, false));
+  document.getElementById('finRepeat').addEventListener('change', (e) => {
+    document.getElementById('finRepeatDayWrap').hidden = !e.target.checked;
+    document.getElementById('finRepeatHint').hidden = !e.target.checked;
+  });
+  document.getElementById('finDate').addEventListener('change', (e) => {
+    const d = Number(String(e.target.value).slice(8, 10));
+    if (d) document.getElementById('finRepeatDay').value = Math.min(28, d);
+  });
+  document.getElementById('finReceipt').addEventListener('change', onFinReceiptChosen);
+  document.getElementById('finEntrySave').addEventListener('click', saveFinEntry);
+  ['finEntryClose', 'finEntryCancel'].forEach((id) => document.getElementById(id).addEventListener('click', closeFinEntry));
+  document.getElementById('finDeleteToggle').addEventListener('click', () => {
+    document.getElementById('finDeleteForm').hidden = !document.getElementById('finDeleteForm').hidden;
+  });
+  document.getElementById('finDeleteConfirm').addEventListener('click', deleteFinEntry);
+  document.getElementById('finEntryBackdrop').addEventListener('input', () => { document.getElementById('finEntryError').textContent = ''; });
+  document.getElementById('finDrillClose').addEventListener('click', closeFinDrill);
+  ['finEntryBackdrop', 'finDrillBackdrop'].forEach((id) => document.getElementById(id).addEventListener('click', (e) => {
+    if (e.target.id === id) (id === 'finDrillBackdrop' ? closeFinDrill : closeFinEntry)();
+  }));
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!document.getElementById('finEntryBackdrop').hidden) closeFinEntry();
+    else if (!document.getElementById('finDrillBackdrop').hidden) closeFinDrill();
+  });
+}
+
+async function loadFinancePage() {
+  bindFinanceUi();
+  finShowError('');
+  const setup = await ensureFinanceSetup(true);
+  if (!setup) {
+    finShowError('Head Office Finance needs the updated Apps Script. Redeploy it (Manage deployments → Edit → New version), then refresh.');
+    return;
+  }
+  document.getElementById('finAddBtns').hidden = !setup.canCapture;
+  document.getElementById('finCatTabBtn').hidden = !setup.canManage;
+  const branchSel = document.getElementById('finBranch');
+  const keep = branchSel.value;
+  branchSel.innerHTML = '<option value="">Everything</option><option value="' + escapeAttr(setup.headOffice) + '">' + escapeHtml(setup.headOffice) + ' only</option>' +
+    setup.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+  branchSel.value = keep;
+  if (!document.getElementById('finEntryMonth').value) document.getElementById('finEntryMonth').value = localToday().slice(0, 7);
+  setFinTab(finTab);
+}
+
+function setFinTab(tab) {
+  if (tab === 'categories' && !(finSetup && finSetup.canManage)) tab = 'overview';
+  finTab = tab;
+  document.querySelectorAll('#finTabs button').forEach((b) => b.classList.toggle('active', b.dataset.fin === tab));
+  ['overview', 'entries', 'due', 'categories'].forEach((t) => { document.getElementById('fin-' + t).hidden = t !== tab; });
+  if (tab === 'overview') loadFinanceOverview();
+  else if (tab === 'entries') loadFinanceEntries();
+  else if (tab === 'due') loadFinanceDue();
+  else if (tab === 'categories') renderFinCategories();
+}
+
+function finPeriodParams() {
+  const p = { email: currentUser.email, period: document.getElementById('finPeriod').value, branch: document.getElementById('finBranch').value };
+  if (p.period === 'custom') { p.from = document.getElementById('finFrom').value; p.to = document.getElementById('finTo').value; }
+  return p;
+}
+
+// ── Overview ─────────────────────────────────────────────────────────
+
+async function loadFinanceOverview() {
+  const res = await apiGet('financeSummary', finPeriodParams());
+  if (!res.success) { finShowError(res.error); return; }
+  finShowError('');
+  finSummary = res;
+  const badge = document.getElementById('finDueBadge');
+  badge.textContent = res.dueCount; badge.hidden = !res.dueCount;
+  renderFinOverview();
+}
+
+function renderFinOverview() {
+  const res = finSummary;
+  if (!res) return;
+  document.getElementById('finRangeLabel').textContent = dayLabel(res.range.from) + ' – ' + dayLabel(res.range.to) + ' · ' +
+    (res.branch === 'Everything' ? 'Head Office and all branches' : res.branch);
+  document.getElementById('finKpiIncome').textContent = rand(res.income);
+  document.getElementById('finKpiExpense').textContent = rand(res.expense);
+  const net = document.getElementById('finKpiNet');
+  net.textContent = rand(res.net);
+  net.className = 'kpi-value ' + (res.net < 0 ? 'fin-neg' : 'fin-pos');
+
+  ['Expense', 'Income'].forEach((kind) => {
+    const majors = res.majors.filter((m) => m.kind === kind);
+    const max = Math.max(1, ...majors.map((m) => m.total));
+    const html = majors.map((m) => {
+      const open = !!finOpenMajors[m.key];
+      const subMax = Math.max(1, ...m.subs.map((x) => x.total));
+      return '<div class="fin-major' + (open ? ' is-open' : '') + (m.total ? '' : ' is-empty') + '">' +
+        '<button type="button" class="fin-bar-row" data-major-toggle="' + escapeAttr(m.key) + '" aria-expanded="' + open + '"' + (m.total ? '' : ' disabled') + '>' +
+          '<span class="fin-bar-label"><span class="fin-caret">' + (m.total ? (open ? '▾' : '▸') : '') + '</span>' + escapeHtml(m.name) + '</span>' +
+          '<span class="fin-bar-amt">' + rand(m.total) + '</span>' +
+          '<span class="fin-bar"><span class="fin-bar-fill fin-' + kind.toLowerCase() + '" style="width:' + (m.total / max * 100).toFixed(1) + '%"></span></span>' +
+        '</button>' +
+        (open ? '<div class="fin-subs">' + m.subs.map((x) =>
+          '<button type="button" class="fin-bar-row fin-sub-row" data-major="' + escapeAttr(m.key) + '" data-sub="' + escapeAttr(x.id) + '">' +
+            '<span class="fin-bar-label">' + escapeHtml(x.name) + ' <span class="muted">(' + x.count + ')</span></span>' +
+            '<span class="fin-bar-amt">' + rand(x.total) + '</span>' +
+            '<span class="fin-bar"><span class="fin-bar-fill fin-' + kind.toLowerCase() + ' is-sub" style="width:' + (x.total / subMax * 100).toFixed(1) + '%"></span></span>' +
+          '</button>').join('') +
+          '<button type="button" class="link-btn fin-all-link" data-all="' + escapeAttr(m.key) + '">See all ' + m.count + ' entries in ' + escapeHtml(m.name) + ' →</button>' +
+        '</div>' : '') +
+      '</div>';
+    }).join('');
+    document.getElementById(kind === 'Expense' ? 'finExpenseMajors' : 'finIncomeMajors').innerHTML = html ||
+      '<p class="muted">Nothing recorded for this period.</p>';
+  });
+}
+
+// ── Lists of entries (drill-down and the Entries tab) ─────────────────
+
+function finLineHtml(l) {
+  const src = l.source === 'Head Office'
+    ? (l.branch && l.branch !== 'Head Office' ? 'Head Office · for ' + l.branch : 'Head Office')
+    : l.source + ' · ' + l.branch;
+  const canEdit = l.source === 'Head Office' && finSetup && finSetup.canCapture;
+  return '<div class="fin-line">' +
+    '<div class="fin-line-main">' +
+      '<span class="fin-line-desc">' + escapeHtml(l.description) + (l.party ? ' <span class="muted">· ' + escapeHtml(l.party) + '</span>' : '') + '</span>' +
+      '<span class="fin-line-meta">' + escapeHtml(dayLabel(l.date)) + ' · ' + escapeHtml(src) +
+        (l.sub ? ' · ' + escapeHtml(l.sub) : '') + (l.recurringId ? ' · <span class="fin-rec-tag">monthly</span>' : '') + '</span>' +
+    '</div>' +
+    '<div class="fin-line-side">' +
+      '<span class="fin-line-amt ' + (l.kind === 'Income' ? 'fin-pos' : '') + '">' + (l.kind === 'Income' ? '+' : '') + rand(l.amount) + '</span>' +
+      (l.receiptUrl ? '<a href="' + escapeAttr(l.receiptUrl) + '" target="_blank" rel="noopener">' + (l.source === 'Cash-up' ? 'PDF' : 'Receipt') + '</a>' : '') +
+      (canEdit ? '<button type="button" class="link-btn fin-edit" data-ref="' + escapeAttr(l.ref) + '">Edit</button>' : '') +
+    '</div></div>';
+}
+
+let finLastLines = [];
+
+async function openFinDrill(majorKey, subId) {
+  const m = finSummary.majors.filter((x) => x.key === majorKey)[0];
+  const sub = subId && m ? m.subs.filter((x) => x.id === subId)[0] : null;
+  document.getElementById('finDrillTitle').textContent = (m ? m.name : '') + (sub ? ' › ' + sub.name : '');
+  document.getElementById('finDrillSubtitle').textContent = document.getElementById('finRangeLabel').textContent;
+  document.getElementById('finDrillBody').innerHTML = '<p class="muted">Loading…</p>';
+  document.getElementById('finDrillBackdrop').hidden = false;
+  const params = Object.assign(finPeriodParams(), { majorKey: majorKey });
+  if (subId) params.subId = subId;
+  const res = await apiGet('financeEntries', params);
+  if (!res.success) { document.getElementById('finDrillBody').innerHTML = '<p class="error-text">' + escapeHtml(res.error) + '</p>'; return; }
+  finLastLines = res.lines;
+  document.getElementById('finDrillBody').innerHTML =
+    '<div class="fin-drill-total"><span>' + res.count + ' entr' + (res.count === 1 ? 'y' : 'ies') + '</span><strong>' + rand(res.total) + '</strong></div>' +
+    '<div class="fin-lines">' + res.lines.map(finLineHtml).join('') + '</div>' +
+    (res.count > res.lines.length ? '<p class="muted">Showing the latest ' + res.lines.length + '.</p>' : '');
+}
+function closeFinDrill() { document.getElementById('finDrillBackdrop').hidden = true; }
+
+async function loadFinanceEntries() {
+  const month = document.getElementById('finEntryMonth').value || localToday().slice(0, 7);
+  const last = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+  const params = { email: currentUser.email, period: 'custom', from: month + '-01', to: month + '-' + String(last).padStart(2, '0'), source: 'Head Office' };
+  const kind = document.getElementById('finEntryKind').value;
+  if (kind) params.kind = kind;
+  const list = document.getElementById('finEntryList');
+  list.innerHTML = '<p class="muted">Loading…</p>';
+  const res = await apiGet('financeEntries', params);
+  if (!res.success) { list.innerHTML = '<p class="error-text">' + escapeHtml(res.error) + '</p>'; return; }
+  finLastLines = res.lines;
+  document.getElementById('finEntryCount').textContent = res.count + ' Head Office entr' + (res.count === 1 ? 'y' : 'ies') + ' this month';
+  list.innerHTML = res.lines.length ? res.lines.map(finLineHtml).join('') : '<p class="muted">Nothing captured for this month yet.</p>';
+}
+
+function onFinLineClick(e) {
+  const btn = e.target.closest('.fin-edit');
+  if (!btn) return;
+  const line = finLastLines.filter((l) => l.ref === btn.dataset.ref)[0];
+  if (line) { closeFinDrill(); openFinEntry(line, line.kind); }
+}
+
+// ── Add / edit entry ─────────────────────────────────────────────────
+
+function setFinEntryKind(kind) {
+  finEntryKind = kind;
+  document.querySelectorAll('#finEntryBackdrop .seg button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.kind === kind);
+    b.setAttribute('aria-checked', b.dataset.kind === kind ? 'true' : 'false');
+  });
+  document.getElementById('finEntryTitle').textContent = (finEntry ? 'Edit ' : 'New ') + kind.toLowerCase();
+  document.getElementById('finPartyLabel').textContent = kind === 'Income' ? 'Received from' : 'Paid to';
+  const majors = finSetup.majors.filter((m) => m.kind === kind && !m.auto && (!m.hidden || (finEntry && finEntry.majorKey === m.key)));
+  const sel = document.getElementById('finMajor');
+  sel.innerHTML = '<option value="">Choose…</option>' + majors.map((m) => '<option value="' + escapeAttr(m.key) + '">' + escapeHtml(m.name) + '</option>').join('');
+  fillSubSelect(document.getElementById('finSub'), '', false);
+}
+
+function openFinEntry(line, kind) {
+  if (!finSetup) return;
+  finEntry = line;
+  finEntryRequestId = makeRequestId();
+  finReceiptData = '';
+  setFinEntryKind(kind || 'Expense');
+  document.querySelector('#finEntryBackdrop .seg').hidden = !!line;
+  const v = (id, val) => { document.getElementById(id).value = val === undefined || val === null ? '' : val; };
+  document.getElementById('finMethod').innerHTML = '<option value="">—</option>' + finSetup.methods.map((m) => '<option>' + escapeHtml(m) + '</option>').join('');
+  document.getElementById('finFor').innerHTML = '<option value="' + escapeAttr(finSetup.headOffice) + '">' + escapeHtml(finSetup.headOffice) + '</option>' +
+    finSetup.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+  v('finDate', line ? line.date : localToday());
+  v('finAmount', line ? line.amount : '');
+  v('finDesc', line ? line.description : '');
+  v('finParty', line ? line.party : '');
+  v('finMethod', line ? line.method : '');
+  v('finRef', line ? line.reference : '');
+  v('finFor', line ? line.branch : finSetup.headOffice);
+  v('finReceipt', '');
+  if (line) {
+    v('finMajor', line.majorKey);
+    fillSubSelect(document.getElementById('finSub'), line.majorKey, false, line.subId);
+  }
+  const info = document.getElementById('finReceiptInfo');
+  info.hidden = !(line && line.receiptUrl);
+  info.innerHTML = line && line.receiptUrl ? 'Current receipt: <a href="' + escapeAttr(line.receiptUrl) + '" target="_blank" rel="noopener">view</a>. Choose a new file to replace it.' : '';
+  document.getElementById('finRepeatWrap').hidden = !!line;
+  document.getElementById('finRepeat').checked = false;
+  document.getElementById('finRepeatDayWrap').hidden = true;
+  document.getElementById('finRepeatHint').hidden = true;
+  v('finRepeatDay', Math.min(28, Number(localToday().slice(8, 10))));
+  document.getElementById('finDeleteWrap').hidden = !line;
+  document.getElementById('finDeleteForm').hidden = true;
+  v('finDeleteReason', '');
+  document.getElementById('finEntryError').textContent = '';
+  const btn = document.getElementById('finEntrySave');
+  btn.disabled = false; btn.textContent = line ? 'Save changes' : 'Save';
+  document.getElementById('finEntryBackdrop').hidden = false;
+  document.getElementById(line ? 'finAmount' : 'finMajor').focus();
+}
+
+function closeFinEntry() { document.getElementById('finEntryBackdrop').hidden = true; finEntry = null; }
+
+async function onFinReceiptChosen(e) {
+  const file = e.target.files && e.target.files[0];
+  const err = document.getElementById('finEntryError');
+  finReceiptData = '';
+  if (!file) return;
+  try {
+    if (file.type === 'application/pdf') {
+      if (file.size > 5 * 1024 * 1024) { err.textContent = 'That PDF is too large (max 5 MB).'; e.target.value = ''; return; }
+      finReceiptData = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error('Could not read that file.'));
+        r.readAsDataURL(file);
+      });
+    } else if (file.type.startsWith('image/')) {
+      finReceiptData = await resizeImageFileToDataUrl(file, PROOF_MAX_DIMENSION, PROOF_JPEG_QUALITY);
+    } else {
+      err.textContent = 'Choose a photo or a PDF.'; e.target.value = '';
+    }
+  } catch (ex) {
+    err.textContent = ex.message || 'Could not use that file.';
+  }
+}
+
+async function saveFinEntry() {
+  const err = document.getElementById('finEntryError');
+  const val = (id) => document.getElementById(id).value.trim();
+  const payload = {
+    requesterEmail: currentUser.email, kind: finEntryKind, date: val('finDate'), amount: Number(val('finAmount')),
+    subId: val('finSub'), description: val('finDesc'), party: val('finParty'), method: val('finMethod'),
+    reference: val('finRef'), forBranch: val('finFor'), clientRequestId: finEntryRequestId
+  };
+  if (finEntry) payload.id = finEntry.ref;
+  if (finReceiptData) payload.receipt = finReceiptData;
+  if (!finEntry && document.getElementById('finRepeat').checked) {
+    payload.repeatMonthly = true;
+    payload.dayOfMonth = Number(val('finRepeatDay')) || 1;
+  }
+  if (!payload.subId) { err.textContent = 'Choose a category and subcategory.'; return; }
+  if (!(payload.amount > 0)) { err.textContent = 'Enter an amount greater than zero.'; return; }
+  if (!payload.date) { err.textContent = 'Choose the date.'; return; }
+  if (!payload.description) { err.textContent = 'Add a short description.'; return; }
+  const btn = document.getElementById('finEntrySave');
+  btn.disabled = true; btn.textContent = finReceiptData ? 'Uploading…' : 'Saving…';
+  const res = await apiPost('financeSave', payload);
+  btn.disabled = false; btn.textContent = finEntry ? 'Save changes' : 'Save';
+  if (!res.success) {
+    err.textContent = res.networkError ? 'Lost connection — it may have saved. Press Save again: it won\'t create a duplicate.' : (res.error || 'Could not save.');
+    return;
+  }
+  const wasEdit = !!finEntry;
+  closeFinEntry();
+  finShowNotice((wasEdit ? 'Updated ' : 'Saved ') + res.id + (res.recurringId ? ' — it will be due again every month.' : '.') + (res.warning ? ' Note: ' + res.warning : ''));
+  setFinTab(finTab);
+}
+
+async function deleteFinEntry() {
+  const reason = document.getElementById('finDeleteReason').value.trim();
+  const err = document.getElementById('finEntryError');
+  if (!reason) { err.textContent = 'Please give a reason for deleting it.'; return; }
+  const btn = document.getElementById('finDeleteConfirm');
+  btn.disabled = true;
+  const res = await apiPost('financeDelete', { requesterEmail: currentUser.email, id: finEntry.ref, reason: reason });
+  btn.disabled = false;
+  if (!res.success) { err.textContent = res.error || 'Could not delete.'; return; }
+  const id = finEntry.ref;
+  closeFinEntry();
+  finShowNotice(id + ' was deleted. It stays in the sheet for the record but no longer counts.');
+  setFinTab(finTab);
+}
+
+// ── Repeat-monthly: due items ─────────────────────────────────────────
+
+let finDueData = null;
+async function loadFinanceDue() {
+  const res = await apiGet('financeDue', { email: currentUser.email });
+  if (!res.success) { finShowError(res.error); return; }
+  finDueData = res;
+  const badge = document.getElementById('finDueBadge');
+  badge.textContent = res.due.length; badge.hidden = !res.due.length;
+  document.getElementById('finDueList').innerHTML = res.due.length ? res.due.map((d, i) =>
+    '<div class="fin-due" data-i="' + i + '">' +
+      '<div class="fin-line-main"><span class="fin-line-desc">' + escapeHtml(d.description) + '</span>' +
+        '<span class="fin-line-meta">Due ' + escapeHtml(dayLabel(d.date)) + ' · ' + escapeHtml(d.category) +
+        (d.forBranch !== 'Head Office' ? ' · for ' + escapeHtml(d.forBranch) : '') + '</span></div>' +
+      '<div class="fin-due-actions">' +
+        '<label class="fin-due-amt">R <input type="number" step="0.01" min="0" value="' + d.amount + '" aria-label="Amount"></label>' +
+        '<button type="button" class="jd-action-btn is-go" data-due="confirm">Confirm</button>' +
+        '<button type="button" class="link-btn" data-due="skip">Skip this month</button>' +
+      '</div></div>').join('') : '<p class="muted">Nothing due right now.</p>';
+  document.getElementById('finRecList').innerHTML = res.recurring.length ? res.recurring.map((r) =>
+    '<div class="fin-line"><div class="fin-line-main"><span class="fin-line-desc">' + escapeHtml(r.description) + '</span>' +
+      '<span class="fin-line-meta">' + escapeHtml(r.kind) + ' · ' + escapeHtml(r.category) + ' · day ' + r.dayOfMonth + ' of each month' +
+      (r.forBranch !== 'Head Office' ? ' · for ' + escapeHtml(r.forBranch) : '') + '</span></div>' +
+      '<div class="fin-line-side"><span class="fin-line-amt">' + rand(r.amount) + '</span>' +
+      '<button type="button" class="link-btn fin-stop" data-stop="' + escapeAttr(r.id) + '">Stop</button></div></div>').join('')
+    : '<p class="muted">None yet. Tick "Repeat every month" when capturing rent, wages or a debit order.</p>';
+}
+
+async function onFinDueClick(e) {
+  const stop = e.target.closest('[data-stop]');
+  if (stop) {
+    if (!confirm('Stop repeating this item? Past entries are kept.')) return;
+    const res = await apiPost('financeRecurring', { requesterEmail: currentUser.email, op: 'stop', recurringId: stop.dataset.stop });
+    if (!res.success) { finShowError(res.error); return; }
+    loadFinanceDue();
+    return;
+  }
+  const btn = e.target.closest('[data-due]');
+  if (!btn) return;
+  const row = btn.closest('.fin-due');
+  const d = finDueData.due[Number(row.dataset.i)];
+  const payload = { requesterEmail: currentUser.email, op: btn.dataset.due, recurringId: d.recurringId, month: d.month };
+  if (btn.dataset.due === 'confirm') {
+    payload.amount = Number(row.querySelector('input').value);
+    if (!(payload.amount > 0)) { finShowError('Enter the amount before confirming.'); return; }
+  }
+  btn.disabled = true;
+  const res = await apiPost('financeRecurring', payload);
+  if (!res.success) { finShowError(res.error); btn.disabled = false; return; }
+  finShowError('');
+  finShowNotice(btn.dataset.due === 'confirm' ? 'Recorded ' + d.description + ' for ' + d.month + '.' : 'Skipped ' + d.description + ' for ' + d.month + '.');
+  loadFinanceDue();
+}
+
+// ── Categories (Admins) ───────────────────────────────────────────────
+
+function renderFinCategories() {
+  if (!finSetup) return;
+  const majors = finSetup.majors.filter((m) => m.kind === finCatKind);
+  document.getElementById('finCatList').innerHTML = majors.map((m) =>
+    '<div class="fin-cat' + (m.hidden ? ' is-hidden' : '') + '">' +
+      '<div class="fin-cat-head"><strong>' + escapeHtml(m.name) + '</strong>' +
+        (m.hidden ? ' <span class="status-tag tag-inactive">Hidden</span>' : '') +
+        (m.auto ? '' : '<button type="button" class="link-btn" data-cat="toggleMajor" data-major="' + escapeAttr(m.key) + '">' + (m.hidden ? 'Show' : 'Hide') + ' category</button>') +
+      '</div>' +
+      (m.auto ? '<p class="muted fin-cat-note">Filled in automatically from the daily cash-ups (one line per branch).</p>' :
+        '<ul class="fin-cat-subs">' + m.subs.map((x) =>
+          '<li class="' + (x.active ? '' : 'is-hidden') + '"><span>' + escapeHtml(x.name) + (x.active ? '' : ' <span class="muted">(hidden)</span>') + '</span>' +
+          '<span class="fin-cat-actions"><button type="button" class="link-btn" data-cat="rename" data-sub="' + escapeAttr(x.id) + '" data-name="' + escapeAttr(x.name) + '">Rename</button>' +
+          '<button type="button" class="link-btn" data-cat="toggle" data-sub="' + escapeAttr(x.id) + '">' + (x.active ? 'Hide' : 'Show') + '</button></span></li>').join('') + '</ul>' +
+        '<div class="fin-cat-add"><input type="text" placeholder="New subcategory under ' + escapeAttr(m.name) + '" maxlength="60" data-add-input="' + escapeAttr(m.key) + '">' +
+          '<button type="button" class="jd-action-btn" data-cat="add" data-major="' + escapeAttr(m.key) + '">Add</button></div>') +
+    '</div>').join('');
+}
+
+async function onFinCatClick(e) {
+  const btn = e.target.closest('[data-cat]');
+  if (!btn) return;
+  const op = btn.dataset.cat;
+  const payload = { requesterEmail: currentUser.email, op: op };
+  if (op === 'add') {
+    const input = document.querySelector('[data-add-input="' + btn.dataset.major + '"]');
+    payload.majorKey = btn.dataset.major;
+    payload.name = input.value.trim();
+    if (!payload.name) { input.focus(); return; }
+  } else if (op === 'rename') {
+    const name = prompt('New name for "' + btn.dataset.name + '":', btn.dataset.name);
+    if (!name || name.trim() === btn.dataset.name) return;
+    payload.subId = btn.dataset.sub;
+    payload.name = name.trim();
+  } else if (op === 'toggle') {
+    payload.subId = btn.dataset.sub;
+  } else if (op === 'toggleMajor') {
+    payload.majorKey = btn.dataset.major;
+  }
+  btn.disabled = true;
+  const res = await apiPost('financeCategory', payload);
+  btn.disabled = false;
+  if (!res.success) { finShowError(res.error); return; }
+  finShowError('');
+  await ensureFinanceSetup(true);
+  renderFinCategories();
 }
 
 // ─────────────────────────────────────────────────────────────────────

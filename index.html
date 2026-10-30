@@ -271,10 +271,85 @@
     </div>
   </section>
 
-  <!-- ─── HEAD OFFICE EXPENSES (Pro: hoExpenses — placeholder) ─── -->
-  <section id="view-hoexp" class="view card" hidden>
-    <h1>Head Office Expenses</h1>
-    <p class="muted">Coming soon. This tab is only visible to Admins.</p>
+  <!-- ─── HEAD OFFICE FINANCE (Pro: hoExpenses) ─────────────── -->
+  <section id="view-hoexp" class="view" hidden>
+    <div class="card">
+      <div class="jobs-head">
+        <h1>Head Office Finance</h1>
+        <div class="fin-add-btns" id="finAddBtns" hidden>
+          <button type="button" id="finAddExpense" class="btn-primary jobs-new-btn">+ Expense</button>
+          <button type="button" id="finAddIncome" class="btn-secondary fin-income-btn">+ Income</button>
+        </div>
+      </div>
+      <div class="sub-switch fin-tabs" id="finTabs">
+        <button type="button" class="active" data-fin="overview">Overview</button>
+        <button type="button" data-fin="entries">Entries</button>
+        <button type="button" data-fin="due">Due <span class="nav-badge" id="finDueBadge" hidden></span></button>
+        <button type="button" data-fin="categories" id="finCatTabBtn" hidden>Categories</button>
+      </div>
+      <p class="jobs-notice" id="finNotice" hidden></p>
+      <p class="error-text" id="finError" hidden></p>
+
+      <div id="fin-overview" class="fin-panel">
+        <div class="fin-filters">
+          <label>Period
+            <select id="finPeriod">
+              <option value="thisWeek">This Week</option>
+              <option value="thisMonth" selected>This Month</option>
+              <option value="lastMonth">Last Month</option>
+              <option value="last3Months">Last 3 Months</option>
+              <option value="last6Months">Last 6 Months</option>
+              <option value="thisYear">This Year</option>
+              <option value="lastYear">Last Year</option>
+              <option value="custom">Custom Date Range</option>
+            </select>
+          </label>
+          <label>Showing
+            <select id="finBranch"><option value="">Everything</option></select>
+          </label>
+          <label id="finFromWrap" hidden>From <input type="date" id="finFrom"></label>
+          <label id="finToWrap" hidden>To <input type="date" id="finTo"></label>
+        </div>
+        <p class="muted fin-range" id="finRangeLabel"></p>
+        <div class="fin-kpis">
+          <div class="kpi-card"><span class="kpi-label">Income</span><span class="kpi-value" id="finKpiIncome">R 0.00</span></div>
+          <div class="kpi-card"><span class="kpi-label">Expenses</span><span class="kpi-value" id="finKpiExpense">R 0.00</span></div>
+          <div class="kpi-card"><span class="kpi-label">Net</span><span class="kpi-value" id="finKpiNet">R 0.00</span></div>
+        </div>
+        <div class="fin-columns">
+          <div><h2>Expenses</h2><div id="finExpenseMajors" class="fin-majors"></div></div>
+          <div><h2>Income</h2><div id="finIncomeMajors" class="fin-majors"></div></div>
+        </div>
+        <p class="muted fin-footnote">Includes Head Office entries, branch shop expenses, and shop sales and in-store donations from the daily cash-ups. Tap a category to see its subcategories, then tap a subcategory to see the entries.</p>
+      </div>
+
+      <div id="fin-entries" class="fin-panel" hidden>
+        <div class="fin-filters">
+          <label>Month <input type="month" id="finEntryMonth"></label>
+          <label>Type
+            <select id="finEntryKind"><option value="">Expenses &amp; income</option><option value="Expense">Expenses</option><option value="Income">Income</option></select>
+          </label>
+        </div>
+        <p class="muted" id="finEntryCount"></p>
+        <div id="finEntryList" class="fin-lines"></div>
+      </div>
+
+      <div id="fin-due" class="fin-panel" hidden>
+        <p class="muted">Repeat-monthly items waiting to be confirmed. Confirming records the payment; skip a month if it didn't happen.</p>
+        <div id="finDueList"></div>
+        <h2 style="margin-top:22px;">Repeat-monthly items</h2>
+        <div id="finRecList"></div>
+      </div>
+
+      <div id="fin-categories" class="fin-panel" hidden>
+        <p class="muted">The main categories are the same for every organisation so the reports stay comparable. Add your own subcategories under them, rename them, or hide the ones you don't use. Hidden ones stay on past entries.</p>
+        <div class="sub-switch" id="finCatKind">
+          <button type="button" class="active" data-kind="Expense">Expenses</button>
+          <button type="button" data-kind="Income">Income</button>
+        </div>
+        <div id="finCatList"></div>
+      </div>
+    </div>
   </section>
 
   <!-- ─── DEVELOPER (developers only) ──────────────────────── -->
@@ -661,6 +736,69 @@
       <button type="button" class="modal-close" id="jobClose" aria-label="Close">&times;</button>
     </div>
     <div class="modal-body" id="jobBody"></div>
+  </div>
+</div>
+
+<!-- ─── FINANCE: ADD / EDIT ENTRY ──────────────────────────── -->
+<div id="finEntryBackdrop" class="modal-backdrop" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="finEntryTitle">
+    <div class="modal-head">
+      <h2 id="finEntryTitle" style="margin:0;">New expense</h2>
+      <button type="button" class="modal-close" id="finEntryClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="seg" role="radiogroup" aria-label="Expense or income">
+        <button type="button" role="radio" data-kind="Expense">Expense</button>
+        <button type="button" role="radio" data-kind="Income">Income</button>
+      </div>
+      <div class="grid-2" style="margin-top:12px;">
+        <label>Date <input type="date" id="finDate"></label>
+        <label>Amount (R) <input type="number" step="0.01" min="0" inputmode="decimal" id="finAmount"></label>
+        <label>Category <select id="finMajor"></select></label>
+        <label>Subcategory <select id="finSub"></select></label>
+      </div>
+      <label>Description <input type="text" id="finDesc" maxlength="300" placeholder="e.g. October rent"></label>
+      <div class="grid-2">
+        <label><span id="finPartyLabel">Paid to</span> (optional) <input type="text" id="finParty" maxlength="120"></label>
+        <label>Payment method <select id="finMethod"></select></label>
+        <label>Invoice / reference (optional) <input type="text" id="finRef" maxlength="60"></label>
+        <label>For <select id="finFor"></select></label>
+      </div>
+      <p class="muted fin-for-hint">Choose a branch when Head Office pays a cost that belongs to that shop (e.g. its rent), so the branch's true running cost shows in the overview.</p>
+      <label>Receipt or invoice (photo or PDF, optional) <input type="file" id="finReceipt" accept="image/*,application/pdf"></label>
+      <p class="muted" id="finReceiptInfo" hidden></p>
+      <div id="finRepeatWrap" class="fin-repeat">
+        <label class="fin-check"><input type="checkbox" id="finRepeat"> Repeat every month</label>
+        <label id="finRepeatDayWrap" hidden>Due on day <input type="number" id="finRepeatDay" min="1" max="28" step="1"></label>
+        <p class="muted" id="finRepeatHint" hidden>Each month it will appear under <strong>Due</strong> for someone to confirm (or adjust the amount). Nothing is recorded without that confirmation.</p>
+      </div>
+      <p class="error-text" id="finEntryError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="finEntryCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="finEntrySave">Save</button>
+      </div>
+      <div id="finDeleteWrap" class="fin-delete" hidden>
+        <button type="button" class="link-btn fin-delete-btn" id="finDeleteToggle">Delete this entry…</button>
+        <div id="finDeleteForm" hidden>
+          <label>Reason for deleting <input type="text" id="finDeleteReason" maxlength="200"></label>
+          <button type="button" class="btn-primary btn-danger" id="finDeleteConfirm">Delete entry</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── FINANCE: DRILL-DOWN ───────────────────────────────── -->
+<div id="finDrillBackdrop" class="modal-backdrop" hidden>
+  <div class="modal job-modal fin-drill-modal" role="dialog" aria-modal="true" aria-labelledby="finDrillTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="finDrillTitle" style="margin:0;"></h2>
+        <p class="muted" id="finDrillSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="finDrillClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="finDrillBody"></div>
   </div>
 </div>
 
