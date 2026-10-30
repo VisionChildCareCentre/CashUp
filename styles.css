@@ -764,3 +764,8 @@ textarea { min-height: 60px; resize: vertical; }
 .fin-delete[hidden], #finDeleteForm[hidden] { display: none; }
 .fin-delete-btn { color: var(--danger); }
 .seg[hidden] { display: none; }
+
+/* Clicking outside a form pop-up nudges it instead of closing it. */
+@keyframes modal-nudge { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+.modal.modal-nudge { animation: modal-nudge .25s ease-in-out 2; }
+@media (prefers-reduced-motion: reduce) { .modal.modal-nudge { animation: none; box-shadow: 0 0 0 3px var(--primary); } }

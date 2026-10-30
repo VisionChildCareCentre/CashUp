@@ -1463,12 +1463,8 @@ function initUsersUi() {
 
   document.getElementById('userEditClose').addEventListener('click', closeUserEdit);
   document.getElementById('userEditCancel').addEventListener('click', closeUserEdit);
-  document.getElementById('userEditBackdrop').addEventListener('click', (e) => {
-    if (e.target.id === 'userEditBackdrop') closeUserEdit();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !document.getElementById('userEditBackdrop').hidden) closeUserEdit();
-  });
+  // A form: only X or Cancel closes it, so a stray click doesn't lose changes.
+  guardModalBackdrop('userEditBackdrop');
   document.getElementById('userEditStatus').addEventListener('change', updateUserEditNote);
   document.getElementById('userEditRole').addEventListener('change', updateUserEditNote);
   document.getElementById('userEditSave').addEventListener('click', saveUserEdit);
@@ -1772,13 +1768,16 @@ function bindJobsUi() {
   document.getElementById('jobNewSubmit').addEventListener('click', submitNewJob);
   document.querySelectorAll('#jobNewBackdrop .seg button').forEach((b) => b.addEventListener('click', () => setNewJobType(b.dataset.type)));
   document.getElementById('jobClose').addEventListener('click', closeJob);
-  ['jobNewBackdrop', 'jobBackdrop'].forEach((id) => document.getElementById(id).addEventListener('click', (e) => {
-    if (e.target.id === id) (id === 'jobBackdrop' ? closeJob : closeNewJob)();
-  }));
+  // The new-request form only closes with X or Cancel. The job detail closes
+  // on an outside click or Esc only while no action form (with typed notes,
+  // quantities or a photo) is open.
+  guardModalBackdrop('jobNewBackdrop');
+  document.getElementById('jobBackdrop').addEventListener('click', (e) => {
+    if (e.target.id !== 'jobBackdrop') return;
+    if (document.querySelector('#jobBody .jd-form')) nudgeModal('jobBackdrop'); else closeJob();
+  });
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (!document.getElementById('jobBackdrop').hidden) closeJob();
-    else if (!document.getElementById('jobNewBackdrop').hidden) closeNewJob();
+    if (e.key === 'Escape' && !document.getElementById('jobBackdrop').hidden && !document.querySelector('#jobBody .jd-form')) closeJob();
   });
   document.getElementById('jobBody').addEventListener('click', onJobBodyClick);
   // Receiving a transfer: warn live about lines that will be flagged.
@@ -2533,13 +2532,14 @@ function bindFinanceUi() {
   document.getElementById('finDeleteConfirm').addEventListener('click', deleteFinEntry);
   document.getElementById('finEntryBackdrop').addEventListener('input', () => { document.getElementById('finEntryError').textContent = ''; });
   document.getElementById('finDrillClose').addEventListener('click', closeFinDrill);
-  ['finEntryBackdrop', 'finDrillBackdrop'].forEach((id) => document.getElementById(id).addEventListener('click', (e) => {
-    if (e.target.id === id) (id === 'finDrillBackdrop' ? closeFinDrill : closeFinEntry)();
-  }));
+  // The entry form only closes with X or Cancel (so nothing typed is lost);
+  // the read-only drill-down still closes on an outside click or Esc.
+  guardModalBackdrop('finEntryBackdrop');
+  document.getElementById('finDrillBackdrop').addEventListener('click', (e) => {
+    if (e.target.id === 'finDrillBackdrop') closeFinDrill();
+  });
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (!document.getElementById('finEntryBackdrop').hidden) closeFinEntry();
-    else if (!document.getElementById('finDrillBackdrop').hidden) closeFinDrill();
+    if (e.key === 'Escape' && document.getElementById('finEntryBackdrop').hidden && !document.getElementById('finDrillBackdrop').hidden) closeFinDrill();
   });
 }
 
@@ -3086,6 +3086,22 @@ async function changePasswordClick() {
   if (!res.success) { msg.textContent = res.error || 'Could not change password.'; msg.className = 'dev-msg error-text'; return; }
   ['pwCurrent', 'pwNew', 'pwConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
   msg.textContent = 'Password changed.'; msg.className = 'dev-msg ok-text';
+}
+
+// Forms in a pop-up only close with their X or Cancel button. A click on the
+// dimmed background just gives the form a little shake instead of closing it
+// and losing what was typed.
+function guardModalBackdrop(id) {
+  document.getElementById(id).addEventListener('click', (e) => {
+    if (e.target.id === id) nudgeModal(id);
+  });
+}
+function nudgeModal(id) {
+  const modal = document.querySelector('#' + id + ' .modal');
+  if (!modal) return;
+  modal.classList.remove('modal-nudge');
+  void modal.offsetWidth; // restart the animation
+  modal.classList.add('modal-nudge');
 }
 
 function escapeHtml(str) {
