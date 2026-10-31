@@ -226,6 +226,11 @@
         <h1>Deliveries, Collections &amp; Transfers</h1>
         <button type="button" id="newJobBtn" class="btn-primary jobs-new-btn" hidden>+ New request</button>
       </div>
+      <div class="sub-switch" id="jobsTabs" hidden>
+        <button type="button" class="active" data-jobs-tab="list">Jobs</button>
+        <button type="button" data-jobs-tab="dash">Dashboard <span class="nav-badge" id="jobsAttnBadge" hidden></span></button>
+      </div>
+      <div id="jobsListPanel">
       <p class="muted" id="jobsIntro"></p>
       <p class="jobs-notice" id="jobsNotice" hidden></p>
       <div class="jobs-toolbar">
@@ -268,6 +273,90 @@
       <p id="jobsError" class="error-text" hidden></p>
       <div id="jobsList" class="jobs-list"></div>
       <p id="jobsEmpty" class="muted" hidden>No jobs match your search or filter.</p>
+      </div>
+
+      <!-- Dashboard (Head Office + store managers; not drivers) -->
+      <div id="jobsDashPanel" hidden>
+        <div class="fin-filters jd-dash-filters">
+          <label>Period
+            <select id="jdPeriod">
+              <option value="thisWeek">Last 7 days</option>
+              <option value="thisMonth" selected>This Month</option>
+              <option value="lastMonth">Last Month</option>
+              <option value="last3Months">Last 3 Months</option>
+              <option value="last6Months">Last 6 Months</option>
+              <option value="thisYear">This Year</option>
+              <option value="lastYear">Last Year</option>
+              <option value="custom">Custom Date Range</option>
+            </select>
+          </label>
+          <label id="jdBranchWrap">Branch
+            <select id="jdBranch"><option value="">All branches</option></select>
+          </label>
+          <label>Type
+            <select id="jdType">
+              <option value="">All</option>
+              <option value="Delivery">Deliveries</option>
+              <option value="Collection">Collections</option>
+              <option value="Transfer">Transfers</option>
+            </select>
+          </label>
+          <label id="jdFromWrap" hidden>From <input type="date" id="jdFrom"></label>
+          <label id="jdToWrap" hidden>To <input type="date" id="jdTo"></label>
+        </div>
+        <p class="muted jd-range" id="jdRange"></p>
+        <p class="error-text" id="jdError" hidden></p>
+
+        <div class="kpi-row jd-kpis" id="jdKpis"></div>
+
+        <div class="jd-dash-grid">
+          <div class="card jd-panel">
+            <div class="chart-card-head"><h3>Needs attention <span class="jd-count" id="jdAttnCount"></span></h3>
+              <span class="muted jd-hint">Right now · tap a job to open it</span></div>
+            <div id="jdAttention" class="jd-list"></div>
+          </div>
+          <div class="card jd-panel" id="jdTransferCard">
+            <div class="chart-card-head"><h3>Transfer problems</h3><span class="muted jd-hint">Short, extra or damaged stock</span></div>
+            <div id="jdTransfers" class="jd-list"></div>
+          </div>
+        </div>
+
+        <div class="card chart-card">
+          <div class="chart-card-head"><h3>Completed jobs <span class="muted" id="jdTrendUnit"></span></h3></div>
+          <div class="chart-wrap"><canvas id="jdChartTrend"></canvas></div>
+        </div>
+        <div class="dash-two-col">
+          <div class="card chart-card" id="jdBranchCard">
+            <h3>By branch</h3>
+            <div class="chart-wrap chart-wrap-short"><canvas id="jdChartBranch"></canvas></div>
+          </div>
+          <div class="card chart-card">
+            <h3>By stock category</h3>
+            <div class="chart-wrap chart-wrap-short"><canvas id="jdChartCategory"></canvas></div>
+            <p class="muted jd-hint" id="jdCategoryNote"></p>
+          </div>
+        </div>
+        <div class="card chart-card">
+          <div class="chart-card-head"><h3>Why jobs failed</h3><span class="muted jd-hint" id="jdFailNote"></span></div>
+          <div id="jdFails" class="jd-fails"></div>
+        </div>
+        <div class="card chart-card" id="jdDriversCard" hidden>
+          <div class="chart-card-head"><h3>Drivers</h3><span class="muted jd-hint">Workload for the period — not a ranking</span></div>
+          <div class="ibt-table-wrap"><table class="jd-drivers">
+            <thead><tr><th>Driver</th><th>Completed</th><th>On time</th><th>Failed attempts</th><th>Open now</th></tr></thead>
+            <tbody id="jdDriversBody"></tbody>
+          </table></div>
+        </div>
+
+        <div class="card jd-report-card">
+          <h3>Monthly report</h3>
+          <p class="muted">A printable one-page summary for a month — for board meetings and funders. Uses the branch chosen above.</p>
+          <div class="jd-report-row">
+            <label>Month <input type="month" id="jdReportMonth"></label>
+            <button type="button" class="btn-primary" id="jdReportBtn">Open report</button>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 

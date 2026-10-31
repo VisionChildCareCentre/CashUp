@@ -1842,7 +1842,9 @@ async function loadJobs() {
     BackOffice: 'All deliveries, collections and transfers across branches (view only).'
   }[res.role] || 'All deliveries, collections and transfers across branches. Open a job to approve it, schedule a driver, resolve a transfer discrepancy, put it on hold or cancel it.';
   document.getElementById('jobsIntro').textContent = intro;
-  document.getElementById('newJobBtn').hidden = !res.canCreate;
+  document.getElementById('newJobBtn').hidden = !res.canCreate || !document.getElementById('jobsDashPanel').hidden;
+  bindJobsDashboard();
+  updateJobsTabs();
 
   const branchWrap = document.getElementById('jobsBranchWrap');
   branchWrap.hidden = !(res.isOffice || res.role === 'BackOffice');
@@ -2112,6 +2114,13 @@ function renderJob(activeAction) {
       '" data-action="' + a.key + '">' + escapeHtml(a.label) + '</button>').join('') + '</div>';
     if (activeAction) actionsHtml += jobActionForm(activeAction, j);
   }
+  if (activeAction === 'value') {
+    actionsHtml += '<div class="jd-form"><label>Estimated value of the donated items (R)' +
+      ' <input type="text" inputmode="decimal" id="jaValue" value="' + (j.collectionValue === null ? '' : escapeAttr(j.collectionValue.toFixed(2))) + '" placeholder="e.g. 850"></label>' +
+      '<p class="muted" style="font-size:13px;margin-top:-4px;">A rough figure is fine — it adds up the donated stock collected on the dashboard. Leave empty to remove it.</p>' +
+      '<div class="user-edit-actions"><button type="button" class="btn-secondary" data-form="back">Back</button>' +
+      '<button type="button" class="btn-primary" data-value-save>Save value</button></div></div>';
+  }
 
   const history = openJobData.history.slice().reverse().map((h) =>
     '<li><span class="jh-when">' + escapeHtml(formatShortDateTime(h.timestamp)) + '</span>' +
@@ -2135,6 +2144,8 @@ function renderJob(activeAction) {
       row('Completed', j.completedAt ? (openJobData.completedByName || j.completedBy) + ' · ' + formatShortDateTime(j.completedAt) : '') +
       row('Proof', j.proofFile ? fileButton(j.proofFile, 'View signed delivery note') : '', true) +
       row('Driver\'s note', j.completionNotes) +
+      ('collectionValue' in j ? row('Estimated value', (j.collectionValue === null ? '<span class="muted">Not recorded</span>' : escapeHtml(rand(j.collectionValue))) +
+        (openJobData.canSetValue && activeAction !== 'value' ? ' <button type="button" class="link-btn" data-value-edit>' + (j.collectionValue === null ? 'Add' : 'Edit') + '</button>' : ''), true) : '') +
       row('Last failed attempt', j.status !== 'Completed' ? j.lastFailReason : '') +
     '</div>') +
     actionsHtml +
@@ -2221,6 +2232,7 @@ function jobActionForm(key, j) {
       ' <input type="file" id="jaProof" accept="image/*" capture="environment"></label>' +
       '<div id="jaProofWrap" class="exp-preview-wrap" hidden><img id="jaProofPreview" class="exp-preview" alt="Proof photo preview"></div>' +
       '<p class="error-text" id="jaProofError"></p>' +
+      (openJobData.valueOn ? '<label>Estimated value of the donated items (R, optional) <input type="text" inputmode="decimal" id="jaValue" placeholder="e.g. 850"></label>' : '') +
       notes('Note, e.g. who received it', false);
     confirm = 'Mark completed';
   } else if (key === 'fail') {
@@ -2260,6 +2272,17 @@ function jobActionForm(key, j) {
 }
 
 async function onJobBodyClick(e) {
+  if (e.target.closest('[data-value-edit]')) { renderJob('value'); const v = document.getElementById('jaValue'); if (v) v.focus(); return; }
+  const saveBtn = e.target.closest('[data-value-save]');
+  if (saveBtn) {
+    const errEl = document.getElementById('jobActionError');
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    const res = await apiPost('setCollectionValue', { requesterEmail: currentUser.email, ref: openJobRef, value: document.getElementById('jaValue').value.trim() });
+    if (!res.success) { errEl.textContent = res.error || 'Could not save.'; saveBtn.disabled = false; saveBtn.textContent = 'Save value'; return; }
+    await openJob(openJobRef);
+    loadJobs();
+    return;
+  }
   const actionBtn = e.target.closest('.jd-action-btn');
   if (actionBtn) {
     jobProofImage = '';
@@ -2309,6 +2332,11 @@ async function onJobBodyClick(e) {
   if (key === 'complete') {
     if (!jobProofImage) { errEl.textContent = 'Add a photo of the signed delivery note.'; return; }
     payload.proofImage = jobProofImage;
+    const valEl = document.getElementById('jaValue');
+    if (valEl) {
+      payload.collectionValue = valEl.value.trim();
+      if (payload.collectionValue && !/^R?\s*[\d\s,]*\.?\d*$/i.test(payload.collectionValue)) { errEl.textContent = 'Enter the value as a number, e.g. 850 — or leave it empty.'; return; }
+    }
   }
   if (key === 'fail') {
     payload.reason = document.getElementById('jaReason').value;
@@ -2334,6 +2362,282 @@ async function onJobBodyClick(e) {
   await openJob(ref);
   if (res.warning) document.getElementById('jobActionError').textContent = res.warning;
   loadJobs();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// DELIVERIES DASHBOARD (stage 4) — Jobs | Dashboard switch on the
+// Deliveries tab, action lists, charts, drivers and the monthly report.
+// ─────────────────────────────────────────────────────────────────────
+
+const JD_COLORS = { Delivery: '#0d53af', Collection: '#E6007E', Transfer: '#7b61c9' };
+const JD_LABELS = { Delivery: 'Deliveries', Collection: 'Collections', Transfer: 'Transfers' };
+function jdCount(n, type) { return n + ' ' + (n === 1 ? type : JD_LABELS[type]).toLowerCase(); }
+let jdBound = false;
+let jdData = null;
+let jdLoadSeq = 0;
+const jdCharts = {};
+
+function jobsTab(which) {
+  document.querySelectorAll('#jobsTabs [data-jobs-tab]').forEach((b) => b.classList.toggle('active', b.dataset.jobsTab === which));
+  document.getElementById('jobsListPanel').hidden = which !== 'list';
+  document.getElementById('jobsDashPanel').hidden = which !== 'dash';
+  document.getElementById('newJobBtn').hidden = which !== 'list' || !(jobsData && jobsData.canCreate);
+  if (which === 'dash') loadJobsDashboard();
+}
+
+// Same rules as the server's "Needs attention" list, for the tab badge.
+function jobsAttentionCount() {
+  if (!jobsData) return 0;
+  const today = localToday();
+  return jobsData.jobs.filter((j) => {
+    if (JOB_FINAL.indexOf(j.status) !== -1) return false;
+    if (j.overdue || ['Failed Attempt', 'Discrepancy Reported', 'On Hold'].indexOf(j.status) !== -1) return true;
+    if (j.status === 'Pending Approval') {
+      const d = new Date(j.createdAt);
+      return !isNaN(d) && (Date.parse(today) - Date.parse(localDay(d))) >= 86400000;
+    }
+    return false;
+  }).length;
+}
+function localDay(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+
+function updateJobsTabs() {
+  const tabs = document.getElementById('jobsTabs');
+  tabs.hidden = !jobsData || jobsData.role === 'Driver';
+  const n = jobsAttentionCount();
+  const badge = document.getElementById('jobsAttnBadge');
+  badge.hidden = tabs.hidden || !n;
+  badge.textContent = n;
+  if (!document.getElementById('jobsDashPanel').hidden) loadJobsDashboard();
+}
+
+function bindJobsDashboard() {
+  if (jdBound) return;
+  jdBound = true;
+  document.getElementById('jobsTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-jobs-tab]');
+    if (b) jobsTab(b.dataset.jobsTab);
+  });
+  ['jdPeriod', 'jdBranch', 'jdType', 'jdFrom', 'jdTo'].forEach((id) => document.getElementById(id).addEventListener('change', () => {
+    const custom = document.getElementById('jdPeriod').value === 'custom';
+    document.getElementById('jdFromWrap').hidden = !custom;
+    document.getElementById('jdToWrap').hidden = !custom;
+    if (custom && (!document.getElementById('jdFrom').value || !document.getElementById('jdTo').value)) return;
+    loadJobsDashboard();
+  }));
+  const open = (e) => { const r = e.target.closest('[data-open-job]'); if (r) openJob(r.dataset.openJob); };
+  document.getElementById('jdAttention').addEventListener('click', open);
+  document.getElementById('jdTransfers').addEventListener('click', open);
+  document.getElementById('jdReportBtn').addEventListener('click', openDeliveriesReport);
+  const m = new Date(); m.setDate(1); m.setMonth(m.getMonth() - 1);
+  document.getElementById('jdReportMonth').value = m.getFullYear() + '-' + String(m.getMonth() + 1).padStart(2, '0');
+}
+
+function jdParams() {
+  const p = { email: currentUser.email, period: document.getElementById('jdPeriod').value,
+    branch: document.getElementById('jdBranch').value, type: document.getElementById('jdType').value };
+  if (p.period === 'custom') { p.from = document.getElementById('jdFrom').value; p.to = document.getElementById('jdTo').value; }
+  return p;
+}
+
+async function loadJobsDashboard() {
+  bindJobsDashboard();
+  const seq = ++jdLoadSeq;
+  const err = document.getElementById('jdError');
+  err.hidden = true;
+  document.getElementById('jdRange').textContent = 'Loading…';
+  const res = await apiGet('deliveriesDashboard', jdParams());
+  if (seq !== jdLoadSeq) return;
+  if (!res.success) {
+    document.getElementById('jdRange').textContent = '';
+    err.textContent = res.error === 'Unknown action' ? 'The dashboard needs the updated Apps Script. Redeploy it, then refresh.' : (res.error || 'Could not load the dashboard.');
+    err.hidden = false;
+    return;
+  }
+  jdData = res;
+  const branchSel = document.getElementById('jdBranch');
+  document.getElementById('jdBranchWrap').hidden = !!res.lockedBranch;
+  if (!res.lockedBranch && branchSel.options.length < 2) {
+    branchSel.innerHTML = '<option value="">All branches</option>' + res.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+  }
+  renderJobsDashboard(res);
+}
+
+function jdRangeLabel(res) {
+  const r = res.range;
+  return dayLabel(r.from) + ' – ' + dayLabel(r.to) + ' · ' + (res.lockedBranch || res.branch || 'All branches') +
+    (res.type ? ' · ' + JD_LABELS[res.type] : '');
+}
+
+function jdKpi(label, value, sub, cls) {
+  return '<div class="kpi-card' + (cls ? ' ' + cls : '') + '"><span class="kpi-label">' + escapeHtml(label) + '</span>' +
+    '<span class="kpi-value">' + escapeHtml(value) + '</span>' + (sub ? '<span class="kpi-sub">' + escapeHtml(sub) + '</span>' : '') + '</div>';
+}
+
+function jdKpisHtml(k, valueOn) {
+  const parts = [];
+  ['Delivery', 'Collection', 'Transfer'].forEach((t) => { if (k.completed[t]) parts.push(jdCount(k.completed[t], t)); });
+  let html = jdKpi('Completed', String(k.completedTotal), parts.join(' · ') || 'none in this period') +
+    jdKpi('On time', k.onTimePct === null ? '—' : k.onTimePct + '%', k.onTimeOf ? k.onTime + ' of ' + k.onTimeOf + ' by the required date' : 'no completed jobs yet',
+      k.onTimePct === null ? '' : (k.onTimePct >= 90 ? 'is-good' : (k.onTimePct >= 70 ? 'is-warn' : 'is-bad'))) +
+    jdKpi('Open now', String(k.open), k.overdue ? k.overdue + ' overdue' : 'none overdue', k.overdue ? 'is-bad' : '') +
+    jdKpi('Failed attempts', String(k.failedAttempts), k.failedJobs ? k.recovered + ' of ' + k.failedJobs + ' since completed' : 'none in this period', k.failedAttempts ? 'is-warn' : '') +
+    jdKpi('Turnaround', k.avgDays === null ? '—' : k.avgDays + ' days', 'average, request to done') +
+    jdKpi('New requests', String(k.requested), 'logged in this period');
+  if (valueOn) html += jdKpi('Donated stock collected', rand(k.collectionValue || 0), k.valuedCollections + ' collection' + (k.valuedCollections === 1 ? '' : 's') + ' valued');
+  return html;
+}
+
+function renderJobsDashboard(res) {
+  const k = res.kpis;
+  document.getElementById('jdRange').textContent = jdRangeLabel(res);
+  document.getElementById('jdKpis').innerHTML = jdKpisHtml(k, res.valueOn);
+
+  // Needs attention
+  document.getElementById('jdAttnCount').textContent = res.attentionTotal ? '(' + res.attentionTotal + ')' : '';
+  document.getElementById('jdAttention').innerHTML = res.attention.length ? res.attention.map((a) =>
+    '<button type="button" class="jd-item sev-' + a.severity + '" data-open-job="' + escapeAttr(a.ref) + '">' +
+      '<span class="jd-item-top"><strong>' + escapeHtml(a.ref) + '</strong>' +
+        '<span class="type-tag type-' + escapeAttr(a.type.toLowerCase()) + '">' + escapeHtml(a.type) + '</span>' +
+        '<span class="muted">' + escapeHtml(a.branch + (a.receivingBranch ? ' → ' + a.receivingBranch : '')) + '</span></span>' +
+      '<span class="jd-item-issue">' + escapeHtml(a.issue) + '</span>' +
+    '</button>').join('') + (res.attentionTotal > res.attention.length ? '<p class="muted">…and ' + (res.attentionTotal - res.attention.length) + ' more.</p>' : '')
+    : '<p class="jd-allgood">Nothing needs attention — all on track.</p>';
+
+  // Transfer problems
+  document.getElementById('jdTransferCard').hidden = res.type && res.type !== 'Transfer';
+  document.getElementById('jdTransfers').innerHTML = res.transferProblems.length ? res.transferProblems.map((t) =>
+    '<button type="button" class="jd-item' + (t.status === 'Discrepancy Reported' ? ' sev-2' : '') + '" data-open-job="' + escapeAttr(t.ref) + '">' +
+      '<span class="jd-item-top"><strong>' + escapeHtml(t.ref) + '</strong><span class="muted">' + escapeHtml(t.from + ' → ' + t.to) + '</span>' +
+        (t.status === 'Discrepancy Reported' ? '<span class="status-tag js-overdue">To resolve</span>' : '<span class="status-tag js-done">Resolved</span>') + '</span>' +
+      t.problems.map((p) => '<span class="jd-item-issue">' + escapeHtml(p) + '</span>').join('') +
+      (t.resolution ? '<span class="muted jd-item-note">' + escapeHtml(t.resolution) + '</span>' : '') +
+    '</button>').join('') : '<p class="jd-allgood">No transfer problems in this period.</p>';
+
+  // Charts
+  const types = res.type ? [res.type] : ['Delivery', 'Collection', 'Transfer'];
+  document.getElementById('jdTrendUnit').textContent = '(per ' + res.trend.unit + ')';
+  jdBarChart('trend', 'jdChartTrend', res.trend.labels, types.map((t) => ({ label: JD_LABELS[t], data: res.trend.series[t], backgroundColor: JD_COLORS[t] })), { stacked: true });
+  document.getElementById('jdBranchCard').hidden = !!res.lockedBranch || !!res.branch;
+  if (!res.lockedBranch && !res.branch) {
+    jdBarChart('branch', 'jdChartBranch', res.byBranch.map((b) => b.branch),
+      types.map((t) => ({ label: JD_LABELS[t], data: res.byBranch.map((b) => b[t]), backgroundColor: JD_COLORS[t] })), { stacked: true, horizontal: true });
+  }
+  const catTypes = types.filter((t) => t !== 'Transfer');
+  jdBarChart('category', 'jdChartCategory', res.byCategory.map((c) => c.category),
+    catTypes.map((t) => ({ label: JD_LABELS[t], data: res.byCategory.map((c) => c[t]), backgroundColor: JD_COLORS[t] })), { stacked: true, horizontal: true });
+  document.getElementById('jdCategoryNote').textContent = !catTypes.length ? 'Transfers are counted per item line, not by category.'
+    : (res.valueOn && res.byCategory.some((c) => c.value) ? 'Donated stock value: ' + res.byCategory.filter((c) => c.value).map((c) => c.category + ' ' + rand(c.value)).join(' · ') : '');
+
+  // Fail reasons as simple bars
+  const maxF = Math.max(1, ...res.failReasons.map((f) => f.count));
+  document.getElementById('jdFailNote').textContent = k.failedAttempts ? k.failedAttempts + ' failed attempt' + (k.failedAttempts === 1 ? '' : 's') : '';
+  document.getElementById('jdFails').innerHTML = res.failReasons.length ? res.failReasons.map((f) =>
+    '<div class="jd-fail-row"><span class="jd-fail-label">' + escapeHtml(f.reason) + '</span>' +
+    '<span class="jd-fail-bar"><span style="width:' + Math.round(f.count / maxF * 100) + '%"></span></span>' +
+    '<span class="jd-fail-n">' + f.count + '</span></div>').join('') : '<p class="jd-allgood">No failed attempts in this period.</p>';
+
+  // Drivers
+  const dc = document.getElementById('jdDriversCard');
+  dc.hidden = !res.drivers;
+  if (res.drivers) {
+    document.getElementById('jdDriversBody').innerHTML = res.drivers.length ? res.drivers.map((d) =>
+      '<tr><td><strong>' + escapeHtml(d.name) + '</strong></td><td>' + d.completed + '</td><td>' + (d.onTimePct === null ? '—' : d.onTimePct + '%') +
+      '</td><td>' + d.failed + '</td><td>' + d.open + '</td></tr>').join('') : '<tr><td colspan="5" class="muted">No drivers yet.</td></tr>';
+  }
+}
+
+function jdBarChart(key, canvasId, labels, datasets, opts) {
+  if (jdCharts[key]) { jdCharts[key].destroy(); delete jdCharts[key]; }
+  if (typeof Chart === 'undefined') return;
+  const canvas = document.getElementById(canvasId);
+  const horizontal = !!(opts && opts.horizontal);
+  const wrap = canvas.parentElement;
+  if (horizontal) wrap.style.height = Math.max(160, 46 + labels.length * 34) + 'px';
+  const axis = { grid: { color: '#dfe5ee' }, ticks: { color: '#5e6a7a', font: { size: 11 }, precision: 0 }, beginAtZero: true, stacked: !!(opts && opts.stacked) };
+  const cat = { grid: { display: false }, ticks: { color: '#5e6a7a', font: { size: 11 }, autoSkip: true, maxRotation: 0 }, stacked: !!(opts && opts.stacked) };
+  jdCharts[key] = new Chart(canvas, {
+    type: 'bar',
+    data: { labels: labels, datasets: datasets.map((d) => Object.assign({ borderRadius: 4, maxBarThickness: 34 }, d)) },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false, indexAxis: horizontal ? 'y' : 'x',
+      plugins: {
+        legend: { display: datasets.length > 1, position: 'bottom', labels: { boxWidth: 12, color: '#142132', font: { size: 12 } } },
+        tooltip: { backgroundColor: '#142132', padding: 10, cornerRadius: 6 }
+      },
+      scales: horizontal ? { x: axis, y: cat } : { x: cat, y: axis }
+    }
+  });
+}
+
+// ── Monthly report (printable) ───────────────────────────────────────
+
+async function openDeliveriesReport() {
+  const month = document.getElementById('jdReportMonth').value;
+  if (!/^\d{4}-\d{2}$/.test(month)) { document.getElementById('jdReportMonth').focus(); return; }
+  const y = Number(month.slice(0, 4)), m = Number(month.slice(5, 7));
+  const last = new Date(y, m, 0).getDate();
+  const btn = document.getElementById('jdReportBtn');
+  btn.disabled = true; btn.textContent = 'Preparing…';
+  const res = await apiGet('deliveriesDashboard', { email: currentUser.email, period: 'custom', from: month + '-01', to: month + '-' + String(last).padStart(2, '0'),
+    branch: document.getElementById('jdBranch').value });
+  btn.disabled = false; btn.textContent = 'Open report';
+  if (!res.success) { const err = document.getElementById('jdError'); err.textContent = res.error || 'Could not prepare the report.'; err.hidden = false; return; }
+  const monthName = new Date(y, m - 1, 1).toLocaleDateString('en-ZA', { month: 'long', year: 'numeric' });
+  const scope = res.lockedBranch || res.branch || 'All branches';
+  openReportViewer('Deliveries report · ' + monthName, scope, deliveriesReportHtml(res, monthName, scope));
+}
+
+function deliveriesReportHtml(d, monthName, scope) {
+  const e = escapeHtml;
+  const k = d.kpis;
+  const logo = new URL('assets/logo.jpg', location.href).href;
+  const bars = (rows, max) => rows.map((r) => '<tr><td class="lbl">' + e(r.label) + '</td><td class="bar"><span style="width:' +
+    (max ? Math.round(r.value / max * 100) : 0) + '%"></span></td><td class="n">' + e(r.text || r.value) + '</td></tr>').join('');
+  const types = ['Delivery', 'Collection', 'Transfer'];
+  const kpi = (l, v, s) => '<div class="kpi"><div class="l">' + e(l) + '</div><div class="v">' + e(v) + '</div>' + (s ? '<div class="s">' + e(s) + '</div>' : '') + '</div>';
+  const totals = d.trend.labels.map((lbl, i) => ({ label: (d.trend.unit === 'week' ? 'Week of ' : '') + lbl, value: types.reduce((s, t) => s + d.trend.series[t][i], 0) }));
+  const branchRows = d.byBranch.map((b) => '<tr><td>' + e(b.branch) + '</td>' + types.map((t) => '<td class="c">' + b[t] + '</td>').join('') +
+    '<td class="c"><b>' + types.reduce((s, t) => s + b[t], 0) + '</b></td></tr>').join('');
+  const catRows = d.byCategory.map((c) => '<tr><td>' + e(c.category) + '</td><td class="c">' + c.Delivery + '</td><td class="c">' + c.Collection + '</td>' +
+    (d.valueOn ? '<td class="r">' + (c.value ? e(rand(c.value)) : '—') + '</td>' : '') + '</tr>').join('');
+  const kp = [
+    kpi('Completed', String(k.completedTotal), types.filter((t) => k.completed[t]).map((t) => jdCount(k.completed[t], t)).join(', ')),
+    kpi('On time', k.onTimePct === null ? '—' : k.onTimePct + '%', k.onTimeOf ? k.onTime + ' of ' + k.onTimeOf : ''),
+    kpi('New requests', String(k.requested), ''),
+    kpi('Failed attempts', String(k.failedAttempts), k.failedJobs ? k.recovered + ' later completed' : ''),
+    kpi('Avg turnaround', k.avgDays === null ? '—' : k.avgDays + ' days', 'request to done')
+  ];
+  if (d.valueOn) kp.push(kpi('Donated stock collected', rand(k.collectionValue || 0), k.valuedCollections + ' valued'));
+  return '<!doctype html><html><head><meta charset="utf-8"><title>Deliveries report — ' + e(monthName) + '</title><style>' +
+    '@page{size:A4;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#142132;margin:0;padding:18px;font-size:12px}' +
+    'header{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0d53af;padding-bottom:10px;margin-bottom:14px}header img{height:46px}' +
+    'h1{font-size:20px;margin:0;color:#0d53af}h2{font-size:13px;margin:16px 0 6px;color:#0d53af;text-transform:uppercase;letter-spacing:.04em}' +
+    '.sub{color:#5e6a7a;margin-top:2px}.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}' +
+    '.kpi{border:1px solid #dfe5ee;border-radius:8px;padding:8px 10px}.kpi .l{font-size:10px;color:#5e6a7a;text-transform:uppercase;font-weight:bold}' +
+    '.kpi .v{font-size:20px;font-weight:bold;margin-top:2px}.kpi .s{font-size:10px;color:#5e6a7a}' +
+    'table{width:100%;border-collapse:collapse}td,th{padding:4px 6px;border-bottom:1px solid #edf1f6;text-align:left;vertical-align:top}th{font-size:10px;color:#5e6a7a;text-transform:uppercase}' +
+    '.c{text-align:center}.r{text-align:right}.lbl{width:36%}.n{width:12%;text-align:right;font-weight:bold}.bar span{display:block;height:10px;background:#0d53af;border-radius:3px;min-width:2px}' +
+    '.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}.issue{color:#c0392b}.ok{color:#1e8449}footer{margin-top:18px;color:#8a95a5;font-size:10px;border-top:1px solid #dfe5ee;padding-top:6px}' +
+    '*{-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head><body>' +
+    '<header><img src="' + e(logo) + '" alt=""><div><h1>Deliveries, collections &amp; transfers</h1>' +
+    '<div class="sub">' + e(monthName) + ' · ' + e(scope) + '</div></div></header>' +
+    '<div class="kpis">' + kp.join('') + '</div>' +
+    '<h2>Completed per ' + e(d.trend.unit) + '</h2><table>' + bars(totals, Math.max(0, ...totals.map((t) => t.value))) + '</table>' +
+    '<div class="two"><div>' +
+      (d.byBranch.length ? '<h2>By branch</h2><table><tr><th>Branch</th><th class="c">Del.</th><th class="c">Coll.</th><th class="c">Transf.</th><th class="c">Total</th></tr>' + branchRows + '</table>' : '') +
+      '<h2>Why jobs failed</h2>' + (d.failReasons.length ? '<table>' + bars(d.failReasons.map((f) => ({ label: f.reason, value: f.count })), Math.max(...d.failReasons.map((f) => f.count))) + '</table>' : '<p class="ok">No failed attempts.</p>') +
+    '</div><div>' +
+      (d.byCategory.length ? '<h2>By stock category</h2><table><tr><th>Category</th><th class="c">Deliveries</th><th class="c">Collections</th>' + (d.valueOn ? '<th class="r">Value</th>' : '') + '</tr>' + catRows + '</table>' : '') +
+      '<h2>Transfer problems</h2>' + (d.transferProblems.length ? '<table>' + d.transferProblems.map((t) => '<tr><td><b>' + e(t.ref) + '</b><br>' + e(t.from + ' → ' + t.to) + '</td><td>' +
+        t.problems.map((p) => '<div class="issue">' + e(p) + '</div>').join('') + (t.resolution ? '<div>Resolved: ' + e(t.resolution) + '</div>' : '<div><b>Still to resolve</b></div>') + '</td></tr>').join('') + '</table>' : '<p class="ok">None.</p>') +
+    '</div></div>' +
+    (d.drivers && d.drivers.length ? '<h2>Drivers</h2><table><tr><th>Driver</th><th class="c">Completed</th><th class="c">On time</th><th class="c">Failed attempts</th></tr>' +
+      d.drivers.map((x) => '<tr><td>' + e(x.name) + '</td><td class="c">' + x.completed + '</td><td class="c">' + (x.onTimePct === null ? '—' : x.onTimePct + '%') + '</td><td class="c">' + x.failed + '</td></tr>').join('') + '</table>' : '') +
+    '<h2>Still open today (' + d.attentionTotal + ' need attention)</h2>' + (d.attention.length ? '<table>' + d.attention.slice(0, 12).map((a) =>
+      '<tr><td><b>' + e(a.ref) + '</b></td><td>' + e(a.branch + (a.receivingBranch ? ' → ' + a.receivingBranch : '')) + '</td><td class="' + (a.severity === 1 ? 'issue' : '') + '">' + e(a.issue) + '</td></tr>').join('') + '</table>' : '<p class="ok">Nothing — all on track.</p>') +
+    '<footer>Vision Cash-Up · printed ' + e(new Date().toLocaleString('en-ZA')) + ' · On time = completed on or before the required date.</footer>' +
+    '</body></html>';
 }
 
 // Email links look like …/CashUp/#job=DEL-00012 — remember the job, then
@@ -2961,6 +3265,7 @@ async function openFileViewer(ref, label) {
   document.getElementById('fileBody').innerHTML = '<p class="muted file-loading">Opening the file…</p>';
   document.getElementById('filePrint').disabled = true;
   document.getElementById('fileDownload').disabled = true;
+  document.getElementById('fileDownload').hidden = false;
   document.getElementById('fileBackdrop').hidden = false;
   const params = { email: currentUser.email, t: ref.t, r: ref.r };
   if (ref.l) params.l = ref.l;
@@ -2990,14 +3295,41 @@ async function openFileViewer(ref, label) {
   document.getElementById('fileDownload').disabled = false;
 }
 
+// A report built in the app (e.g. the monthly deliveries report), shown in
+// the same viewer with a Print button. "Save as PDF" is in the print dialog.
+function openReportViewer(title, subtitle, html) {
+  closeFileViewer();
+  fileView = { html: html, name: title };
+  document.getElementById('fileTitle').textContent = title;
+  document.getElementById('fileSubtitle').textContent = subtitle + ' · to save a PDF, choose "Save as PDF" when printing';
+  const frame = document.createElement('iframe');
+  frame.className = 'file-frame report-frame';
+  frame.title = title;
+  frame.srcdoc = html;
+  const body = document.getElementById('fileBody');
+  body.innerHTML = '';
+  body.appendChild(frame);
+  document.getElementById('filePrint').disabled = false;
+  document.getElementById('fileDownload').hidden = true;
+  document.getElementById('fileBackdrop').hidden = false;
+}
+
 function closeFileViewer() {
   document.getElementById('fileBackdrop').hidden = true;
   document.getElementById('fileBody').innerHTML = '';
-  if (fileView) { setTimeout(((u) => () => URL.revokeObjectURL(u))(fileView.blobUrl), 60000); fileView = null; }
+  if (fileView && fileView.blobUrl) setTimeout(((u) => () => URL.revokeObjectURL(u))(fileView.blobUrl), 60000);
+  fileView = null;
 }
 
 function printFile() {
   if (!fileView) return;
+  if (fileView.html) {
+    const shown = document.querySelector('#fileBody .report-frame');
+    try { shown.contentWindow.focus(); shown.contentWindow.print(); return; } catch (err) { /* fall through to a new window */ }
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(fileView.html); w.document.close(); w.onload = () => w.print(); }
+    return;
+  }
   const frame = document.createElement('iframe');
   frame.className = 'print-frame';
   frame.setAttribute('aria-hidden', 'true');
@@ -3250,7 +3582,8 @@ function renderDevSettings() {
 
   document.getElementById('devFeatureList').innerHTML = devState.features.map((f) => {
     const ticked = devDraft.ticks[f.key];
-    const willBeOn = pro && ticked;
+    const parent = f.requires ? devState.features.filter((x) => x.name === f.requires)[0] : null;
+    const willBeOn = pro && ticked && (!parent || devDraft.ticks[parent.key]);
     return '<label class="feature-row' + (pro ? '' : ' is-disabled') + '">' +
       '<input type="checkbox" data-key="' + escapeAttr(f.key) + '"' + (ticked ? ' checked' : '') + (pro ? '' : ' disabled') + '>' +
       '<span class="feature-body">' +
@@ -3259,9 +3592,10 @@ function renderDevSettings() {
           ' <span class="feature-tag ' + (f.stage === 'Live' ? 'tag-live' : 'tag-placeholder') + '">' + escapeHtml(f.stage) + '</span>' +
         '</span>' +
         '<span class="feature-desc">' + escapeHtml(f.description) + '</span>' +
+        (f.requires ? '<span class="feature-req">Needs ' + escapeHtml(f.requires) + '</span>' : '') +
       '</span>' +
       '<span class="feature-state ' + (willBeOn ? 'on' : 'off') + '">' + (willBeOn ? 'On' : 'Off') + '</span>' +
-    '</label>';
+    '</label>' + (f.key === 'weeklyEmail' ? weeklyEmailExtraHtml() : '');
   }).join('');
 
   const saveBtn = document.getElementById('devSaveSettings');
@@ -3269,6 +3603,25 @@ function renderDevSettings() {
   saveBtn.disabled = !changed;
   saveBtn.textContent = changed ? 'Save bundle settings' : 'Saved';
 }
+
+function weeklyEmailExtraHtml() {
+  const sched = devState.weeklyEmailScheduled;
+  const status = sched === true ? '<span class="ok-text">✓ Scheduled for Mondays at about 07:00</span>'
+    : (sched === false ? '<span class="warn-text">Not scheduled yet — in the Apps Script editor, choose <strong>setUpWeeklyEmail</strong> in the function list and press Run (once).</span>'
+      : '<span class="muted">Schedule status unknown until <strong>setUpWeeklyEmail</strong> has been run once in the Apps Script editor.</span>');
+  return '<div class="feature-extra">' + status +
+    ' <button type="button" class="link-btn" id="weeklyPreviewBtn">Send me a preview</button><span class="muted" id="weeklyPreviewMsg"></span></div>';
+}
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('#weeklyPreviewBtn');
+  if (!btn) return;
+  const msg = document.getElementById('weeklyPreviewMsg');
+  btn.disabled = true; msg.textContent = ' Sending…';
+  const res = await apiPost('sendWeeklyEmailPreview', { requesterEmail: currentUser.email });
+  btn.disabled = false;
+  msg.textContent = res.success ? ' Sent to ' + currentUser.email + '.' : ' ' + (res.error === 'Unknown action' ? 'Redeploy the Apps Script first.' : res.error);
+});
 
 async function saveDevSettingsClick() {
   const btn = document.getElementById('devSaveSettings');
