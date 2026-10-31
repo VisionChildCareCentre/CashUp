@@ -424,7 +424,7 @@
       </div>
 
       <div id="fin-due" class="fin-panel" hidden>
-        <p class="muted">Repeat-monthly items waiting to be confirmed. Confirming records the payment; skip a month if it didn't happen.</p>
+        <p class="muted">Repeat-monthly payments due now. Tap one to record it with its receipt, or skip a month that didn't happen.</p>
         <div id="finDueList"></div>
         <h2 style="margin-top:22px;">Repeat-monthly items</h2>
         <div id="finRecList"></div>
@@ -872,6 +872,7 @@
         <button type="button" role="radio" data-kind="Expense">Expense</button>
         <button type="button" role="radio" data-kind="Income">Income</button>
       </div>
+      <p class="fin-mode-note" id="finModeNote" hidden></p>
       <div class="grid-2" style="margin-top:12px;">
         <label>Date <input type="date" id="finDate"></label>
         <label>Amount (R) <input type="number" step="0.01" min="0" inputmode="decimal" id="finAmount"></label>
