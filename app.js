@@ -3017,13 +3017,24 @@ function setFinEntryKind(kind) {
   fillSubSelect(document.getElementById('finSub'), '', false);
 }
 
-function openFinEntry(line, kind) {
+function monthLabel(ym) {
+  const p = String(ym || '').split('-');
+  return p.length >= 2 ? new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleDateString('en-ZA', { month: 'long', year: 'numeric' }) : ym;
+}
+
+// opts: { due: <due item> } records that month of a repeat item;
+//       { template: <repeat item> } edits the repeat item itself.
+let finEntryMode = null;
+function openFinEntry(line, kind, opts) {
   if (!finSetup) return;
+  finEntryMode = opts || null;
+  const due = opts && opts.due, tpl = opts && opts.template, src = due || tpl;
+  if (src) kind = src.kind;
   finEntry = line;
   finEntryRequestId = makeRequestId();
   finReceiptData = '';
   setFinEntryKind(kind || 'Expense');
-  document.querySelector('#finEntryBackdrop .seg').hidden = !!line;
+  document.querySelector('#finEntryBackdrop .seg').hidden = !!line || !!src;
   const v = (id, val) => { document.getElementById(id).value = val === undefined || val === null ? '' : val; };
   document.getElementById('finMethod').innerHTML = '<option value="">—</option>' + finSetup.methods.map((m) => '<option>' + escapeHtml(m) + '</option>').join('');
   document.getElementById('finFor').innerHTML = '<option value="' + escapeAttr(finSetup.headOffice) + '">' + escapeHtml(finSetup.headOffice) + '</option>' +
@@ -3040,25 +3051,43 @@ function openFinEntry(line, kind) {
     v('finMajor', line.majorKey);
     fillSubSelect(document.getElementById('finSub'), line.majorKey, false, line.subId);
   }
+  if (src) {
+    v('finAmount', src.amount); v('finDesc', src.description); v('finParty', src.party); v('finMethod', src.method);
+    v('finFor', src.forBranch); v('finMajor', src.majorKey);
+    fillSubSelect(document.getElementById('finSub'), src.majorKey, false, src.subId);
+    if (due) v('finDate', due.date <= localToday() ? due.date : localToday());
+  }
+  const note = document.getElementById('finModeNote');
+  note.hidden = !src;
+  note.innerHTML = due ? 'Recording <strong>' + escapeHtml(monthLabel(due.month)) + '</strong>. Check the details, change anything that was different this month, and attach the receipt.'
+    : (tpl ? 'Changes apply from the next month you record. Months already recorded keep their amounts.' : '');
+  ['finDate', 'finRef', 'finReceipt'].forEach((id) => { document.getElementById(id).closest('label').hidden = !!tpl; });
   const info = document.getElementById('finReceiptInfo');
   info.hidden = !(line && line.file);
   info.innerHTML = line && line.file ? 'Current receipt: ' + fileButton(line.file, 'view') + '. Choose a new file to replace it.' : '';
-  document.getElementById('finRepeatWrap').hidden = !!line;
+  document.getElementById('finRepeatWrap').hidden = !!line || !!due;
   document.getElementById('finRepeat').checked = false;
-  document.getElementById('finRepeatDayWrap').hidden = true;
+  document.getElementById('finRepeat').closest('label').hidden = !!tpl;
+  document.getElementById('finRepeatDayWrap').hidden = !tpl;
   document.getElementById('finRepeatHint').hidden = true;
-  v('finRepeatDay', Math.min(28, Number(localToday().slice(8, 10))));
+  v('finRepeatDay', tpl ? tpl.dayOfMonth : Math.min(28, Number(localToday().slice(8, 10))));
   document.getElementById('finDeleteWrap').hidden = !line;
   document.getElementById('finDeleteForm').hidden = true;
   v('finDeleteReason', '');
   document.getElementById('finEntryError').textContent = '';
   const btn = document.getElementById('finEntrySave');
-  btn.disabled = false; btn.textContent = line ? 'Save changes' : 'Save';
+  btn.disabled = false; btn.textContent = finSaveLabel();
+  if (due) document.getElementById('finEntryTitle').textContent = 'Record ' + due.description;
+  if (tpl) document.getElementById('finEntryTitle').textContent = 'Edit repeat item';
   document.getElementById('finEntryBackdrop').hidden = false;
-  document.getElementById(line ? 'finAmount' : 'finMajor').focus();
+  document.getElementById(line || src ? 'finAmount' : 'finMajor').focus();
+}
+function finSaveLabel() {
+  if (finEntryMode && finEntryMode.due) return 'Save payment';
+  return finEntry || (finEntryMode && finEntryMode.template) ? 'Save changes' : 'Save';
 }
 
-function closeFinEntry() { document.getElementById('finEntryBackdrop').hidden = true; finEntry = null; }
+function closeFinEntry() { document.getElementById('finEntryBackdrop').hidden = true; finEntry = null; finEntryMode = null; }
 
 async function onFinReceiptChosen(e) {
   const file = e.target.files && e.target.files[0];
@@ -3094,7 +3123,10 @@ async function saveFinEntry() {
   };
   if (finEntry) payload.id = finEntry.ref;
   if (finReceiptData) payload.receipt = finReceiptData;
-  if (!finEntry && document.getElementById('finRepeat').checked) {
+  const due = finEntryMode && finEntryMode.due, tpl = finEntryMode && finEntryMode.template;
+  if (tpl) return saveFinTemplate(payload, tpl);
+  if (due) { payload.dueRecurringId = due.recurringId; payload.dueMonth = due.month; }
+  if (!finEntry && !due && document.getElementById('finRepeat').checked) {
     payload.repeatMonthly = true;
     payload.dayOfMonth = Number(val('finRepeatDay')) || 1;
   }
@@ -3105,14 +3137,32 @@ async function saveFinEntry() {
   const btn = document.getElementById('finEntrySave');
   btn.disabled = true; btn.textContent = finReceiptData ? 'Uploading…' : 'Saving…';
   const res = await apiPost('financeSave', payload);
-  btn.disabled = false; btn.textContent = finEntry ? 'Save changes' : 'Save';
+  btn.disabled = false; btn.textContent = finSaveLabel();
   if (!res.success) {
     err.textContent = res.networkError ? 'Lost connection — it may have saved. Press Save again: it won\'t create a duplicate.' : (res.error || 'Could not save.');
     return;
   }
   const wasEdit = !!finEntry;
   closeFinEntry();
-  finShowNotice((wasEdit ? 'Updated ' : 'Saved ') + res.id + (res.recurringId ? ' — it will be due again every month.' : '.') + (res.warning ? ' Note: ' + res.warning : ''));
+  finShowNotice(due ? 'Recorded ' + due.description + ' for ' + monthLabel(due.month) + ' as ' + res.id + '.' + (res.warning ? ' Note: ' + res.warning : '')
+    : (wasEdit ? 'Updated ' : 'Saved ') + res.id + (res.recurringId ? ' — it will be due again every month.' : '.') + (res.warning ? ' Note: ' + res.warning : ''));
+  setFinTab(finTab);
+}
+
+async function saveFinTemplate(payload, tpl) {
+  const err = document.getElementById('finEntryError');
+  const day = Number(document.getElementById('finRepeatDay').value);
+  if (!payload.subId) { err.textContent = 'Choose a category and subcategory.'; return; }
+  if (!(payload.amount > 0)) { err.textContent = 'Enter an amount greater than zero.'; return; }
+  if (!payload.description) { err.textContent = 'Add a short description.'; return; }
+  if (!(day >= 1 && day <= 28)) { err.textContent = 'Choose a day from 1 to 28.'; return; }
+  const btn = document.getElementById('finEntrySave');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  const res = await apiPost('financeRecurring', Object.assign({}, payload, { op: 'update', recurringId: tpl.id, dayOfMonth: day }));
+  btn.disabled = false; btn.textContent = finSaveLabel();
+  if (!res.success) { err.textContent = res.error || 'Could not save.'; return; }
+  closeFinEntry();
+  finShowNotice('Updated ' + payload.description + '. Months already recorded keep their amounts.');
   setFinTab(finTab);
 }
 
@@ -3142,20 +3192,25 @@ async function loadFinanceDue() {
   badge.textContent = res.due.length; badge.hidden = !res.due.length;
   document.getElementById('finDueList').innerHTML = res.due.length ? res.due.map((d, i) =>
     '<div class="fin-due" data-i="' + i + '">' +
-      '<div class="fin-line-main"><span class="fin-line-desc">' + escapeHtml(d.description) + '</span>' +
+      '<button type="button" class="fin-due-open" data-due="record">' +
+        '<span class="fin-line-desc">' + escapeHtml(d.description) + ' <span class="muted">· ' + escapeHtml(monthLabel(d.month)) + '</span></span>' +
         '<span class="fin-line-meta">Due ' + escapeHtml(dayLabel(d.date)) + ' · ' + escapeHtml(d.category) +
-        (d.forBranch !== 'Head Office' ? ' · for ' + escapeHtml(d.forBranch) : '') + '</span></div>' +
+        (d.forBranch !== 'Head Office' ? ' · for ' + escapeHtml(d.forBranch) : '') + '</span></button>' +
       '<div class="fin-due-actions">' +
-        '<label class="fin-due-amt">R <input type="number" step="0.01" min="0" value="' + d.amount + '" aria-label="Amount"></label>' +
-        '<button type="button" class="jd-action-btn is-go" data-due="confirm">Confirm</button>' +
+        '<span class="fin-line-amt">' + rand(d.amount) + '</span>' +
+        '<button type="button" class="jd-action-btn is-go" data-due="record">Record payment</button>' +
         '<button type="button" class="link-btn" data-due="skip">Skip this month</button>' +
-      '</div></div>').join('') : '<p class="muted">Nothing due right now.</p>';
-  document.getElementById('finRecList').innerHTML = res.recurring.length ? res.recurring.map((r) =>
+      '</div></div>').join('') : '<p class="muted">Nothing due right now. Each repeat item below shows when it is next due.</p>';
+  document.getElementById('finRecList').innerHTML = res.recurring.length ? res.recurring.map((r, i) =>
     '<div class="fin-line"><div class="fin-line-main"><span class="fin-line-desc">' + escapeHtml(r.description) + '</span>' +
       '<span class="fin-line-meta">' + escapeHtml(r.kind) + ' · ' + escapeHtml(r.category) + ' · day ' + r.dayOfMonth + ' of each month' +
-      (r.forBranch !== 'Head Office' ? ' · for ' + escapeHtml(r.forBranch) : '') + '</span></div>' +
+      (r.forBranch !== 'Head Office' ? ' · for ' + escapeHtml(r.forBranch) : '') + '</span>' +
+      (r.nextDue ? '<span class="fin-next-due' + (r.nextDue <= localToday() ? ' is-due' : '') + '">' +
+        (r.nextDue <= localToday() ? 'Due now (' + escapeHtml(dayLabel(r.nextDue)) + ') — see above' : 'Next due ' + escapeHtml(dayLabel(r.nextDue))) + '</span>' : '') +
+      '</div>' +
       '<div class="fin-line-side"><span class="fin-line-amt">' + rand(r.amount) + '</span>' +
-      '<button type="button" class="link-btn fin-stop" data-stop="' + escapeAttr(r.id) + '">Stop</button></div></div>').join('')
+      '<span class="fin-rec-actions"><button type="button" class="link-btn" data-rec-edit="' + i + '">Edit</button>' +
+      '<button type="button" class="link-btn fin-stop" data-stop="' + escapeAttr(r.id) + '">Stop</button></span></div></div>').join('')
     : '<p class="muted">None yet. Tick "Repeat every month" when capturing rent, wages or a debit order.</p>';
 }
 
@@ -3168,20 +3223,19 @@ async function onFinDueClick(e) {
     loadFinanceDue();
     return;
   }
+  const edit = e.target.closest('[data-rec-edit]');
+  if (edit) { openFinEntry(null, null, { template: finDueData.recurring[Number(edit.dataset.recEdit)] }); return; }
   const btn = e.target.closest('[data-due]');
   if (!btn) return;
   const row = btn.closest('.fin-due');
   const d = finDueData.due[Number(row.dataset.i)];
-  const payload = { requesterEmail: currentUser.email, op: btn.dataset.due, recurringId: d.recurringId, month: d.month };
-  if (btn.dataset.due === 'confirm') {
-    payload.amount = Number(row.querySelector('input').value);
-    if (!(payload.amount > 0)) { finShowError('Enter the amount before confirming.'); return; }
-  }
+  if (btn.dataset.due === 'record') { openFinEntry(null, d.kind, { due: d }); return; }
+  if (!confirm('Skip ' + d.description + ' for ' + monthLabel(d.month) + '? Use this when it wasn\'t paid that month.')) return;
   btn.disabled = true;
-  const res = await apiPost('financeRecurring', payload);
+  const res = await apiPost('financeRecurring', { requesterEmail: currentUser.email, op: 'skip', recurringId: d.recurringId, month: d.month });
   if (!res.success) { finShowError(res.error); btn.disabled = false; return; }
   finShowError('');
-  finShowNotice(btn.dataset.due === 'confirm' ? 'Recorded ' + d.description + ' for ' + d.month + '.' : 'Skipped ' + d.description + ' for ' + d.month + '.');
+  finShowNotice('Skipped ' + d.description + ' for ' + monthLabel(d.month) + '.');
   loadFinanceDue();
 }
 
