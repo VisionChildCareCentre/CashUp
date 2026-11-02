@@ -9,6 +9,23 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwL0yLduCoItYz-
 const STORAGE_KEY = 'visionchildandyouthcarecentre@gmail.com';
 const DEV_TOKEN_KEY = 'cashup_dev_token'; // developer sign-in session (6 hours from last use)
 
+const SESSION_KEY = 'cashup_session';   // signed-in device (sign-in codes), 30 days
+const VIEW_AS_KEY = 'cashup_view_as';   // developer "view as" (this browser tab only)
+
+function getSessionToken() {
+  try { return localStorage.getItem(SESSION_KEY) || ''; } catch (e) { return ''; }
+}
+function setSessionToken(token) {
+  try { if (token) localStorage.setItem(SESSION_KEY, token); else localStorage.removeItem(SESSION_KEY); } catch (e) { /* ignore */ }
+}
+function getViewAs() {
+  try { return JSON.parse(sessionStorage.getItem(VIEW_AS_KEY) || 'null'); } catch (e) { return null; }
+}
+function setViewAs(v) {
+  try { if (v) sessionStorage.setItem(VIEW_AS_KEY, JSON.stringify(v)); else sessionStorage.removeItem(VIEW_AS_KEY); } catch (e) { /* ignore */ }
+}
+function authToken() { return getDevToken() || getSessionToken(); }
+
 function getDevToken() {
   try { return localStorage.getItem(DEV_TOKEN_KEY) || ''; } catch (e) { return ''; }
 }
@@ -28,15 +45,19 @@ async function apiGet(action, params) {
   const url = new URL(APPS_SCRIPT_URL);
   url.searchParams.set('action', action);
   Object.keys(params || {}).forEach((k) => url.searchParams.set(k, params[k]));
-  const token = getDevToken();
+  const token = authToken();
   if (token) url.searchParams.set('token', token);
+  const va = getViewAs();
+  if (va) url.searchParams.set('viewAs', va.email);
   return checkDevSession(await fetchWithRetry(() => fetch(url.toString())));
 }
 
 async function apiPost(action, data) {
   const payload = Object.assign({ action: action }, data);
-  const token = getDevToken();
+  const token = authToken();
   if (token) payload.token = token;
+  const va = getViewAs();
+  if (va) payload.viewAs = va.email;
   const body = JSON.stringify(payload);
   return checkDevSession(await fetchWithRetry(() => fetch(APPS_SCRIPT_URL, {
     method: 'POST',
@@ -47,11 +68,25 @@ async function apiPost(action, data) {
 
 // A developer's sign-in lasts 6 hours from last use. If it runs out mid-way,
 // the server answers "Not authorized" — send them back to the password screen.
+// A signed-in device can also be signed out elsewhere or expire (30 days):
+// then go back to the sign-in code screen.
+let lastSessionCheck = 0;
 function checkDevSession(result) {
-  if (result && result.success === false && currentUser && currentUser.role === 'Developer' &&
-      /Not authorized/.test(result.error || '')) {
+  if (!result || result.success !== false || result.viewOnly) return result;
+  const denied = /Not authorized/.test(result.error || '') || result.viewAsEnded;
+  if (!denied) return result;
+  if (getViewAs()) {
+    setViewAs(null);
+    setDevToken('');
+    setTimeout(() => location.reload(), 0);
+  } else if (currentUser && currentUser.role === 'Developer') {
     setDevToken('');
     setTimeout(() => showDevLogin(currentUser.email, 'Your developer sign-in has expired. Please sign in again.'), 0);
+  } else if (currentUser && currentUser.signInCodes && Date.now() - lastSessionCheck > 30000) {
+    lastSessionCheck = Date.now();
+    setSessionToken('');
+    const email = currentUser.email;
+    setTimeout(() => routeForEmail(email), 0);
   }
   return result;
 }
@@ -86,9 +121,9 @@ async function fetchWithRetry(doFetch, attempts) {
 // VIEW ROUTING
 // ─────────────────────────────────────────────────────────────────────
 
-const views = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'manager', 'shopexp', 'submitted', 'admin',
+const views = ['auth', 'signincode', 'devlogin', 'pending', 'rejected', 'inactive', 'manager', 'shopexp', 'submitted', 'admin',
   'backoffice', 'deliveries', 'hoexp', 'downloads', 'developer', 'nopages', 'loading'];
-const NAVLESS_VIEWS = ['auth', 'devlogin', 'pending', 'rejected', 'inactive', 'nopages', 'loading'];
+const NAVLESS_VIEWS = ['auth', 'signincode', 'devlogin', 'pending', 'rejected', 'inactive', 'nopages', 'loading'];
 function showView(name) {
   views.forEach((v) => {
     document.getElementById('view-' + v).hidden = (v !== name);
@@ -103,6 +138,7 @@ document.getElementById('switchUserBtn').addEventListener('click', () => {
   stopBell();
   finSetup = null;
   if (getDevToken()) { apiPost('devLogout', {}); setDevToken(''); }
+  if (getSessionToken()) { apiPost('signOut', {}); setSessionToken(''); }
   localStorage.removeItem(STORAGE_KEY);
   currentUser = null;
   document.getElementById('appNav').innerHTML = '';
@@ -116,6 +152,9 @@ document.getElementById('switchUserBtn').addEventListener('click', () => {
 
 async function init() {
   showView('loading');
+  const va = getViewAs();
+  if (va && getDevToken()) { await routeForEmail(va.email); return; }
+  if (va) setViewAs(null);
   const savedEmail = localStorage.getItem(STORAGE_KEY);
   if (!savedEmail) {
     await loadBranchesIntoSelect('regBranch');
@@ -128,7 +167,9 @@ async function init() {
 async function routeForEmail(email) {
   showView('loading');
   const result = await apiGet('checkUser', { email: email });
+  const viewing = !!getViewAs();
   if (!result.success) {
+    if (result.viewAsEnded) return; // handled by checkDevSession (reloads)
     showAuthError(result.error || 'Something went wrong.');
     showView('auth');
     return;
@@ -147,12 +188,18 @@ async function routeForEmail(email) {
     showDevLogin(result.email || email, '');
     return;
   }
+  if (result.needsCode) {
+    localStorage.setItem(STORAGE_KEY, email);
+    showCodeView(result.email || email);
+    return;
+  }
 
-  localStorage.setItem(STORAGE_KEY, email);
+  if (!viewing) localStorage.setItem(STORAGE_KEY, email);
   currentUser = result;
   currentUser.features = result.features || {};
   document.getElementById('whoami').textContent = result.fullName + ' (' + (ROLE_LABELS[result.role] || result.role || 'pending') + ')';
   document.getElementById('switchUserBtn').hidden = false;
+  updateViewAsBanner();
 
   if (result.status === 'Approved' && ROLE_PAGES[result.role]) {
     buildNav();
@@ -297,6 +344,111 @@ function openPage(page) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// SIGN-IN CODES — when switched on (Developer tab), a device proves the
+// person owns the email with a 6-digit code; it stays signed in 30 days.
+// ─────────────────────────────────────────────────────────────────────
+
+let codeEmail = '';
+
+function showCodeView(email) {
+  codeEmail = email;
+  currentUser = null;
+  stopBell();
+  document.getElementById('appNav').innerHTML = '';
+  document.body.classList.remove('wide-admin');
+  document.getElementById('whoami').textContent = '';
+  document.getElementById('switchUserBtn').hidden = true;
+  document.getElementById('signInCode').value = '';
+  document.getElementById('signInCodeError').textContent = '';
+  showView('signincode');
+  let sentAt = 0;
+  try { sentAt = Number(sessionStorage.getItem('cashup_code_sent:' + email) || 0); } catch (e) { /* ignore */ }
+  if (Date.now() - sentAt < 9 * 60 * 1000) {
+    document.getElementById('codeSentText').textContent = 'Enter the 6-digit code we emailed to ' + email + '.';
+  } else {
+    sendSignInCode();
+  }
+  setTimeout(() => document.getElementById('signInCode').focus(), 50);
+}
+
+async function sendSignInCode() {
+  const text = document.getElementById('codeSentText');
+  const err = document.getElementById('signInCodeError');
+  err.textContent = '';
+  text.textContent = 'Sending a sign-in code to ' + codeEmail + '…';
+  const res = await apiPost('requestSignInCode', { email: codeEmail });
+  if (!res.success) {
+    text.textContent = 'We couldn\'t send a code to ' + codeEmail + '.';
+    err.textContent = res.error === 'Unknown action' ? 'Sign-in codes need the updated Apps Script. Ask a developer.' : (res.error || 'Please try again.');
+    return;
+  }
+  try { sessionStorage.setItem('cashup_code_sent:' + codeEmail, String(Date.now())); } catch (e) { /* ignore */ }
+  text.textContent = 'We\'ve emailed a 6-digit code to ' + (res.sentTo || codeEmail) + '. It can take a minute to arrive — check spam too.';
+}
+
+async function verifySignInCodeClick() {
+  const btn = document.getElementById('signInCodeBtn');
+  const err = document.getElementById('signInCodeError');
+  const code = document.getElementById('signInCode').value.replace(/\D/g, '');
+  err.textContent = '';
+  if (code.length !== 6) { err.textContent = 'Enter the 6 digits from the email.'; return; }
+  btn.disabled = true; btn.textContent = 'Checking…';
+  const res = await apiPost('verifySignInCode', { email: codeEmail, code: code, device: navigator.userAgent });
+  btn.disabled = false; btn.textContent = 'Sign in';
+  if (!res.success) { err.textContent = res.error || 'Could not sign in.'; return; }
+  setSessionToken(res.token);
+  try { sessionStorage.removeItem('cashup_code_sent:' + codeEmail); } catch (e) { /* ignore */ }
+  routeForEmail(codeEmail);
+}
+
+document.getElementById('signInCodeBtn').addEventListener('click', verifySignInCodeClick);
+document.getElementById('signInCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') verifySignInCodeClick(); });
+document.getElementById('signInCode').addEventListener('input', (e) => {
+  const v = e.target.value.replace(/\D/g, '').slice(0, 6);
+  if (v !== e.target.value) e.target.value = v;
+  if (v.length === 6) verifySignInCodeClick();
+});
+document.getElementById('signInResend').addEventListener('click', sendSignInCode);
+document.getElementById('signInSwitch').addEventListener('click', () => {
+  localStorage.removeItem(STORAGE_KEY);
+  document.getElementById('authEmail').value = '';
+  document.getElementById('registerFields').hidden = true;
+  showView('auth');
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// VIEW AS (developers) — the whole app as another person sees it, read-only
+// ─────────────────────────────────────────────────────────────────────
+
+function updateViewAsBanner() {
+  const va = getViewAs();
+  document.getElementById('viewAsBanner').hidden = !va;
+  document.body.classList.toggle('viewing-as', !!va);
+  if (va) {
+    document.getElementById('viewAsName').textContent = va.name + ' (' + (ROLE_LABELS[va.role] || va.role || 'no role') + ')';
+    document.getElementById('switchUserBtn').hidden = true;
+  }
+}
+
+document.getElementById('viewAsStop').addEventListener('click', () => {
+  setViewAs(null);
+  location.reload();
+});
+
+async function startViewAsClick() {
+  const email = document.getElementById('viewAsUser').value;
+  const msg = document.getElementById('viewAsMsg');
+  if (!email) { msg.textContent = 'Choose a person first.'; msg.className = 'dev-msg is-error'; return; }
+  const btn = document.getElementById('viewAsStart');
+  btn.disabled = true;
+  const res = await apiPost('startViewAs', { requesterEmail: currentUser.email, targetEmail: email });
+  btn.disabled = false;
+  if (!res.success) { msg.textContent = res.error === 'Unknown action' ? 'Redeploy the Apps Script first.' : res.error; msg.className = 'dev-msg is-error'; return; }
+  setViewAs({ email: res.email, name: res.fullName, role: res.role, devEmail: currentUser.email });
+  location.reload();
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // DEVELOPER SIGN-IN
 // ─────────────────────────────────────────────────────────────────────
 
@@ -325,7 +477,7 @@ async function submitDevLogin() {
   if (!password) { errEl.textContent = 'Enter your password.'; return; }
   btn.disabled = true; btn.textContent = 'Signing in…';
   setDevToken('');
-  const res = await apiPost('devLogin', { email: devLoginEmailValue, password: password });
+  const res = await apiPost('devLogin', { email: devLoginEmailValue, password: password, device: navigator.userAgent });
   btn.disabled = false; btn.textContent = 'Sign in';
   if (!res.success) { errEl.textContent = res.error || 'Could not sign in.'; return; }
   setDevToken(res.token);
@@ -1361,11 +1513,13 @@ async function loadAdminView(adminEmail) {
   document.getElementById('usersLoading').hidden = false;
   document.getElementById('usersError').hidden = true;
 
-  const [pendingRes, usersRes] = await Promise.all([
+  const [pendingRes, usersRes, logRes] = await Promise.all([
     apiGet('pendingUsers', { email: adminEmail }),
-    apiGet('allUsers', { email: adminEmail })
+    apiGet('allUsers', { email: adminEmail }),
+    apiGet('accessLog', { email: adminEmail })
   ]);
   if (seq !== adminLoadSeq) return;
+  renderAccessLog(logRes);
 
   renderPendingRequests(pendingRes, adminEmail);
 
@@ -1385,6 +1539,38 @@ async function loadAdminView(adminEmail) {
   adminUserBranches = usersRes.branches || [];
   adminFinanceMajors = usersRes.financeMajors || [];
   renderUsersTable();
+}
+
+// Access log: who approved / changed whose access, sign-ins, "view as".
+let accessLogItems = [];
+let accessLogAll = false;
+function renderAccessLog(res) {
+  const el = document.getElementById('accessLogList');
+  const more = document.getElementById('accessLogMore');
+  if (!more.dataset.bound) {
+    more.dataset.bound = '1';
+    more.addEventListener('click', () => { accessLogAll = !accessLogAll; renderAccessLog(null); });
+  }
+  if (res) {
+    if (!res.success) {
+      el.innerHTML = '<p class="muted">' + escapeHtml(res.error === 'Unknown action' ? 'The access log needs the updated Apps Script.' : (res.error || 'Could not load the access log.')) + '</p>';
+      more.hidden = true;
+      return;
+    }
+    accessLogItems = res.items || [];
+  }
+  const shown = accessLogAll ? accessLogItems : accessLogItems.slice(0, 15);
+  el.innerHTML = shown.length ? shown.map((x) => {
+    const self = sameEmail(x.by, x.user) || !x.user;
+    const who = '<strong>' + escapeHtml(x.byName || x.by || 'Someone') + '</strong>';
+    const what = self ? ' ' + escapeHtml(x.action.charAt(0).toLowerCase() + x.action.slice(1))
+      : ' ' + escapeHtml(x.action.toLowerCase().replace('changed access', 'changed access for').replace(/^approved$/, 'approved').replace(/^rejected$/, 'rejected')) +
+        ' <strong>' + escapeHtml(x.userName || x.user) + '</strong>';
+    return '<div class="access-row"><span class="access-when">' + escapeHtml(formatShortDateTime(x.timestamp)) + '</span>' +
+      '<span class="access-what">' + who + what + (x.details ? '<span class="access-details">' + escapeHtml(x.details) + '</span>' : '') + '</span></div>';
+  }).join('') : '<p class="muted">Nothing recorded yet. Approvals, access changes and sign-ins will appear here.</p>';
+  more.hidden = accessLogItems.length <= 15;
+  more.textContent = accessLogAll ? 'Show fewer' : 'Show all ' + accessLogItems.length;
 }
 
 // Pending requests — same Approve / Reject behaviour as before; after an
@@ -3621,6 +3807,51 @@ async function loadDeveloperTab() {
   renderDevSettings();
   renderDevList(res.developers);
   renderDevLog(res.log);
+  renderSecurityCard(res);
+  loadViewAsUsers();
+}
+
+async function loadViewAsUsers() {
+  const sel = document.getElementById('viewAsUser');
+  const res = await apiGet('allUsers', { email: currentUser.email });
+  if (!res.success) { sel.innerHTML = '<option value="">Could not load people</option>'; return; }
+  const people = res.users.filter((u) => u.role !== 'Developer' && u.status)
+    .sort((a, b) => String(a.fullName).localeCompare(String(b.fullName)));
+  sel.innerHTML = '<option value="">Choose a person…</option>' + people.map((u) =>
+    '<option value="' + escapeAttr(u.email) + '">' + escapeHtml(u.fullName + ' — ' + (ROLE_LABELS[u.role] || u.role || 'no role') +
+      (u.branch ? ' · ' + u.branch : '') + (u.status !== 'Approved' ? ' (' + u.status + ')' : '')) + '</option>').join('');
+}
+
+function renderSecurityCard(res) {
+  document.getElementById('secCodes').checked = !!res.signInCodes;
+  const b = res.backup || {};
+  document.getElementById('backupStatus').innerHTML =
+    (b.scheduled === true ? '<span class="ok-text">✓ Scheduled for the 1st of each month at about 02:00.</span>'
+      : '<span class="warn-text">Not scheduled yet — in the Apps Script editor, choose <strong>setUpSchedules</strong> and press Run (once).</span>') +
+    ' The last 12 copies are kept in the Drive folder "Vision CashUp Backups".' +
+    (b.last ? '<br>Last backup: ' + escapeHtml(b.last) : '<br>No backup made yet.');
+}
+
+async function saveSecurityClick() {
+  const msg = document.getElementById('secMsg');
+  const on = document.getElementById('secCodes').checked;
+  if (on && !confirm('Switch on sign-in codes? Everyone will need a code emailed to them the next time they open the app.')) {
+    document.getElementById('secCodes').checked = false; return;
+  }
+  const res = await apiPost('saveSignInCodes', { requesterEmail: currentUser.email, on: on });
+  msg.className = 'dev-msg' + (res.success ? '' : ' is-error');
+  msg.textContent = res.success ? (res.unchanged ? 'No change.' : 'Saved — sign-in codes are ' + (on ? 'on.' : 'off.')) : (res.error === 'Unknown action' ? 'Redeploy the Apps Script first.' : res.error);
+}
+
+async function backupNowClick() {
+  const btn = document.getElementById('backupNowBtn');
+  const msg = document.getElementById('backupMsg');
+  btn.disabled = true; btn.textContent = 'Backing up…';
+  const res = await apiPost('backupNow', { requesterEmail: currentUser.email });
+  btn.disabled = false; btn.textContent = 'Back up now';
+  msg.className = 'dev-msg' + (res.success ? '' : ' is-error');
+  msg.textContent = res.success ? 'Saved a copy: ' + res.name : (res.error === 'Unknown action' ? 'Redeploy the Apps Script first.' : res.error);
+  if (res.success) loadDeveloperTab();
 }
 
 function bindDeveloperUi() {
@@ -3638,6 +3869,9 @@ function bindDeveloperUi() {
     }
   });
   document.getElementById('devSaveSettings').addEventListener('click', saveDevSettingsClick);
+  document.getElementById('viewAsStart').addEventListener('click', startViewAsClick);
+  document.getElementById('secSave').addEventListener('click', saveSecurityClick);
+  document.getElementById('backupNowBtn').addEventListener('click', backupNowClick);
   document.getElementById('addDevBtn').addEventListener('click', addDeveloperClick);
   document.getElementById('changePwBtn').addEventListener('click', changePasswordClick);
 }
@@ -3686,8 +3920,8 @@ function renderDevSettings() {
 function weeklyEmailExtraHtml() {
   const sched = devState.weeklyEmailScheduled;
   const status = sched === true ? '<span class="ok-text">✓ Scheduled for Mondays at about 07:00</span>'
-    : (sched === false ? '<span class="warn-text">Not scheduled yet — in the Apps Script editor, choose <strong>setUpWeeklyEmail</strong> in the function list and press Run (once).</span>'
-      : '<span class="muted">Schedule status unknown until <strong>setUpWeeklyEmail</strong> has been run once in the Apps Script editor.</span>');
+    : (sched === false ? '<span class="warn-text">Not scheduled yet — in the Apps Script editor, choose <strong>setUpSchedules</strong> in the function list and press Run (once).</span>'
+      : '<span class="muted">Schedule status unknown until <strong>setUpSchedules</strong> has been run once in the Apps Script editor.</span>');
   return '<div class="feature-extra">' + status +
     ' <button type="button" class="link-btn" id="weeklyPreviewBtn">Send me a preview</button><span class="muted" id="weeklyPreviewMsg"></span></div>';
 }

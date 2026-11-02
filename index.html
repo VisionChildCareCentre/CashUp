@@ -35,6 +35,10 @@
     <button id="switchUserBtn" class="link-btn" hidden>Switch user</button>
   </div>
 </header>
+<div id="viewAsBanner" class="viewas-banner" role="status" hidden>
+  <span>Viewing as <strong id="viewAsName"></strong> · read-only, nothing can be saved</span>
+  <button type="button" id="viewAsStop" class="viewas-stop">Stop</button>
+</div>
 
 <main id="app">
 
@@ -80,6 +84,21 @@
   </section>
 
   <!-- ─── DEVELOPER SIGN-IN ────────────────────────────────── -->
+  <section id="view-signincode" class="view card" hidden>
+    <h1>Check your email</h1>
+    <p class="muted" id="codeSentText">We've emailed you a 6-digit sign-in code.</p>
+    <label>Sign-in code
+      <input type="text" id="signInCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456">
+    </label>
+    <button type="button" id="signInCodeBtn" class="btn-primary">Sign in</button>
+    <p id="signInCodeError" class="error-text"></p>
+    <p class="muted code-help">The code works for 10 minutes. This device then stays signed in for 30 days.</p>
+    <div class="code-links">
+      <button type="button" id="signInResend" class="link-btn">Send a new code</button>
+      <button type="button" id="signInSwitch" class="link-btn">Use a different email</button>
+    </div>
+  </section>
+
   <section id="view-devlogin" class="view card" hidden>
     <h1>Developer sign-in</h1>
     <p class="muted">Enter the password for <strong id="devLoginEmail"></strong>.</p>
@@ -491,6 +510,28 @@
     </div>
 
     <div class="card">
+      <h2>View the app as someone else</h2>
+      <p class="muted">See exactly what a person sees — their tabs, figures and buttons — for example after an Admin changes their access. It's read-only: nothing can be saved while viewing. It's recorded in the access log.</p>
+      <div class="viewas-pick">
+        <label>Person <select id="viewAsUser"><option value="">Loading…</option></select></label>
+        <button type="button" id="viewAsStart" class="btn-primary">View as</button>
+      </div>
+      <p id="viewAsMsg" class="dev-msg"></p>
+    </div>
+
+    <div class="card">
+      <h2>Security &amp; backups</h2>
+      <label class="fin-check sec-toggle"><input type="checkbox" id="secCodes"> <span><strong>Sign-in codes</strong> — everyone (except developers) signs in with a 6-digit code emailed to them; each device then stays signed in for 30 days.</span></label>
+      <p class="muted sec-hint">Switch this on after the new app files are uploaded. People already using the app will be asked for a code the next time they open it.</p>
+      <button type="button" id="secSave" class="btn-secondary">Save</button>
+      <p id="secMsg" class="dev-msg"></p>
+      <h3 class="form-sub">Monthly backup of the Google Sheet</h3>
+      <p id="backupStatus" class="muted"></p>
+      <button type="button" id="backupNowBtn" class="btn-secondary">Back up now</button>
+      <p id="backupMsg" class="dev-msg"></p>
+    </div>
+
+    <div class="card">
       <h2>Developers</h2>
       <div id="devList"></div>
       <details class="dev-add">
@@ -588,6 +629,13 @@
         </table>
       </div>
       <p id="usersEmpty" class="muted" hidden>No users match your search or filter.</p>
+
+      <div class="users-head access-head">
+        <h2>Access log</h2>
+        <span class="muted users-count">Who approved or changed whose access, and sign-ins</span>
+      </div>
+      <div id="accessLogList" class="access-log"><p class="muted">Loading…</p></div>
+      <button type="button" id="accessLogMore" class="link-btn" hidden>Show more</button>
     </div>
 
     <div id="admin-tab-submissions" class="admin-tab-panel" hidden>
