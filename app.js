@@ -1347,6 +1347,7 @@ async function loadAdminSubmissions(adminEmail) {
 const ROLE_LABELS = { Manager: 'Store Manager', BackOffice: 'Back Office', Admin: 'Admin', Developer: 'Developer' };
 let adminUsers = [];        // every row of the Users sheet (from 'allUsers')
 let adminUserBranches = []; // branch list for the edit dialog
+let adminFinanceMajors = []; // finance categories that can be hidden from Back Office users
 let usersAdminEmail = null;
 let usersUiInitialised = false;
 let editingUser = null;
@@ -1382,6 +1383,7 @@ async function loadAdminView(adminEmail) {
   }
   adminUsers = usersRes.users || [];
   adminUserBranches = usersRes.branches || [];
+  adminFinanceMajors = usersRes.financeMajors || [];
   renderUsersTable();
 }
 
@@ -1502,7 +1504,10 @@ function renderUsersTable() {
       '<td>' + escapeHtml(u.email) + '</td>' +
       '<td>' + escapeHtml(u.requestedBranch || '—') + '</td>' +
       '<td>' + statusTag(u.status) + '</td>' +
-      '<td class="nowrap">' + escapeHtml(ROLE_LABELS[u.role] || u.role || '—') + '</td>' +
+      '<td class="nowrap">' + escapeHtml(ROLE_LABELS[u.role] || u.role || '—') +
+        (u.role === 'BackOffice' && u.status === 'Approved' && ((u.hiddenFinance || []).length || u.manageDeliveries)
+          ? '<span class="perm-tags">' + ((u.hiddenFinance || []).length ? '<span class="perm-tag">' + u.hiddenFinance.length + ' hidden</span>' : '') +
+            (u.manageDeliveries ? '<span class="perm-tag">Deliveries</span>' : '') + '</span>' : '') + '</td>' +
       '<td>' + escapeHtml(u.branch || '—') + '</td>' +
       '<td>' + escapeHtml(u.approvedBy || '—') + '</td>' +
       '<td class="nowrap">' + dateCell(u.approvedDate) + '</td>' +
@@ -1569,6 +1574,17 @@ function openUserEdit(user) {
   saveBtn.disabled = false;
   saveBtn.textContent = 'Save changes';
 
+  // Back Office access: finance categories they can see + deliveries rights.
+  const hidden = user.hiddenFinance || [];
+  const group = (kind) => adminFinanceMajors.filter((m) => m.kind === kind);
+  document.getElementById('userEditFinCats').innerHTML = ['Expense', 'Income'].map((kind) =>
+    '<div class="user-perms-group"><span class="user-perms-kind">' + (kind === 'Expense' ? 'Expenses' : 'Income') + '</span>' +
+    group(kind).map((m) => '<label class="fin-check"><input type="checkbox" class="perm-cat" value="' + escapeAttr(m.key) + '"' +
+      (hidden.indexOf(m.key) === -1 ? ' checked' : '') + '> ' + escapeHtml(m.name) + '</label>').join('') + '</div>').join('');
+  document.getElementById('userEditFinWrap').hidden = !featureOn('hoExpenses') && !featureOn('downloads');
+  document.getElementById('userEditDelWrap').hidden = !featureOn('deliveries');
+  document.querySelectorAll('input[name="userEditDel"]').forEach((r) => { r.checked = r.value === (user.manageDeliveries ? 'manage' : 'view'); });
+
   updateUserEditNote();
   document.getElementById('userEditBackdrop').hidden = false;
   (isSelf ? branchSel : statusSel).focus();
@@ -1607,6 +1623,8 @@ function updateUserEditNote() {
   }
   note.textContent = text;
   note.hidden = !text;
+  const perms = document.getElementById('userEditPerms');
+  perms.hidden = role !== 'BackOffice' || (document.getElementById('userEditFinWrap').hidden && document.getElementById('userEditDelWrap').hidden);
 }
 
 function closeUserEdit() {
@@ -1622,13 +1640,19 @@ async function saveUserEdit() {
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
 
-  const res = await apiPost('updateUser', {
+  const payload = {
     requesterEmail: usersAdminEmail,
     targetEmail: editingUser.email,
     status: document.getElementById('userEditStatus').value,
     role: document.getElementById('userEditRole').value,
     branch: document.getElementById('userEditBranch').value
-  });
+  };
+  if (payload.role === 'BackOffice') {
+    payload.hiddenFinance = Array.from(document.querySelectorAll('#userEditFinCats .perm-cat')).filter((c) => !c.checked).map((c) => c.value);
+    const del = document.querySelector('input[name="userEditDel"]:checked');
+    payload.manageDeliveries = !!del && del.value === 'manage';
+  }
+  const res = await apiPost('updateUser', payload);
 
   if (!res.success) {
     errEl.textContent = res.error === 'Unknown action'
@@ -1839,7 +1863,7 @@ async function loadJobs() {
   const intro = {
     Manager: 'Deliveries, collections and stock transfers for ' + res.myBranch + '. New requests go to Head Office for approval; transfers to or from your branch need you to confirm dispatch or receipt.',
     Driver: 'Your jobs. Open one to start it, mark it completed with a photo of the signed delivery note, record that it couldn\'t be done, or mark a transfer as delivered.',
-    BackOffice: 'All deliveries, collections and transfers across branches (view only).'
+    BackOffice: res.isOffice ? null : 'All deliveries, collections and transfers across branches (view only).'
   }[res.role] || 'All deliveries, collections and transfers across branches. Open a job to approve it, schedule a driver, resolve a transfer discrepancy, put it on hold or cancel it.';
   document.getElementById('jobsIntro').textContent = intro;
   document.getElementById('newJobBtn').hidden = !res.canCreate || !document.getElementById('jobsDashPanel').hidden;
@@ -2904,7 +2928,8 @@ function renderFinOverview() {
   const res = finSummary;
   if (!res) return;
   document.getElementById('finRangeLabel').textContent = dayLabel(res.range.from) + ' – ' + dayLabel(res.range.to) + ' · ' +
-    (res.branch === 'Everything' ? 'Head Office and all branches' : res.branch);
+    (res.branch === 'Everything' ? 'Head Office and all branches' : res.branch) +
+    (res.hiddenCount ? ' · excludes ' + res.hiddenCount + ' categor' + (res.hiddenCount === 1 ? 'y' : 'ies') + ' not shared with you' : '');
   document.getElementById('finKpiIncome').textContent = rand(res.income);
   document.getElementById('finKpiExpense').textContent = rand(res.expense);
   const net = document.getElementById('finKpiNet');

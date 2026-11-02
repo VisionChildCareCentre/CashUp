@@ -779,6 +779,19 @@
       <label>Branch
         <select id="userEditBranch"></select>
       </label>
+      <div id="userEditPerms" class="user-perms" hidden>
+        <h3 class="form-sub">Back Office access</h3>
+        <div id="userEditFinWrap">
+          <p class="user-perms-label">Head Office Finance categories they can see</p>
+          <p class="muted user-perms-hint">Unticked categories are hidden from them everywhere: totals, lists, receipts, capturing and downloads.</p>
+          <div class="user-perms-cats" id="userEditFinCats"></div>
+        </div>
+        <div id="userEditDelWrap">
+          <p class="user-perms-label">Deliveries</p>
+          <label class="fin-check"><input type="radio" name="userEditDel" value="view"> View only</label>
+          <label class="fin-check"><input type="radio" name="userEditDel" value="manage"> Can manage — approve, schedule, hold, cancel, reschedule and resolve transfers, like an Admin</label>
+        </div>
+      </div>
       <p class="user-edit-note" id="userEditNote" hidden></p>
       <p class="muted user-edit-meta" id="userEditMeta"></p>
       <p class="error-text" id="userEditError"></p>

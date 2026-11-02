@@ -875,3 +875,19 @@ textarea { min-height: 60px; resize: vertical; }
 .fin-mode-note { background: #eef4fc; border-left: 3px solid var(--primary); border-radius: 6px; padding: 8px 12px; font-size: 13.5px; margin: 4px 0 0; }
 .fin-mode-note[hidden] { display: none; }
 #finEntryBackdrop [hidden] { display: none !important; }
+
+/* ─── Per-person Back Office access (Edit user) ──────────────────── */
+.user-perms { border: 1px solid var(--border); border-radius: 10px; padding: 4px 14px 12px; margin: 6px 0 12px; background: #fafcff; }
+.user-perms[hidden] { display: none; }
+.user-perms .form-sub { margin-top: 10px; }
+.user-perms-label { font-weight: 700; font-size: 14px; margin: 12px 0 2px; }
+.user-perms-hint { font-size: 12.5px; margin: 0 0 8px; }
+.user-perms-cats { display: grid; grid-template-columns: 1fr; gap: 4px 16px; }
+.user-perms-group { display: flex; flex-direction: column; gap: 2px; }
+.user-perms-kind { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 6px 0 2px; }
+.user-perms .fin-check { margin: 2px 0; font-weight: 500; }
+#userEditDelWrap .fin-check { align-items: flex-start; }
+#userEditPerms [hidden] { display: none !important; }
+.perm-tags { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: middle; }
+.perm-tag { font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: #eef2f7; color: var(--muted); white-space: nowrap; }
+@media (min-width: 560px) { .user-perms-cats { grid-template-columns: 1fr 1fr; } }
