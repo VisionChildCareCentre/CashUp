@@ -1760,6 +1760,15 @@ function openUserEdit(user) {
   saveBtn.disabled = false;
   saveBtn.textContent = 'Save changes';
 
+  // Signed-in devices (sign-in codes) + sign out everywhere.
+  const sess = document.getElementById('userEditSessions');
+  const devices = user.signedInDevices || 0;
+  sess.hidden = isSelf || (!(currentUser && currentUser.signInCodes) && !devices);
+  document.getElementById('userEditSessionsText').textContent = devices
+    ? 'Signed in on ' + devices + ' device' + (devices === 1 ? '' : 's') + '.' : 'Not signed in on any device.';
+  document.getElementById('userEditSignOut').hidden = !devices;
+  document.getElementById('userEditSignOut').disabled = false;
+
   // Back Office access: finance categories they can see + deliveries rights.
   const hidden = user.hiddenFinance || [];
   const group = (kind) => adminFinanceMajors.filter((m) => m.kind === kind);
@@ -1817,6 +1826,20 @@ function closeUserEdit() {
   document.getElementById('userEditBackdrop').hidden = true;
   editingUser = null;
 }
+
+document.getElementById('userEditSignOut').addEventListener('click', async () => {
+  if (!editingUser) return;
+  if (!confirm('Sign ' + (editingUser.fullName || editingUser.email) + ' out of every device? They\'ll need a new emailed code to sign in again.')) return;
+  const btn = document.getElementById('userEditSignOut');
+  btn.disabled = true;
+  const res = await apiPost('signOutEverywhere', { requesterEmail: usersAdminEmail, targetEmail: editingUser.email });
+  if (!res.success) { document.getElementById('userEditError').textContent = res.error === 'Unknown action' ? 'Redeploy the Apps Script first.' : (res.error || 'Could not sign them out.'); btn.disabled = false; return; }
+  editingUser.signedInDevices = 0;
+  document.getElementById('userEditSessionsText').textContent = 'Signed out of ' + res.count + ' device' + (res.count === 1 ? '' : 's') + '.';
+  btn.hidden = true;
+  const u = adminUsers.filter((x) => sameEmail(x.email, editingUser.email))[0];
+  if (u) u.signedInDevices = 0;
+});
 
 async function saveUserEdit() {
   if (!editingUser) return;
@@ -3964,9 +3987,43 @@ function renderDevList(devs) {
       (sameEmail(d.email, currentUser.email) ? ' <span class="muted">(you)</span>' : '') +
       '<div class="muted" style="font-size:13px;">' + escapeHtml(d.email) + '</div></div>' +
       '<div class="dev-row-tags">' + statusTag(d.status) +
-      (d.hasPassword ? '' : ' <span class="status-tag tag-pending">No password</span>') + '</div></div>'
-  ).join('') + '<p class="muted" style="font-size:13px;">To switch a developer off, use Approvals → All users → Edit.</p>';
+      (d.hasPassword ? '' : ' <span class="status-tag tag-pending">No password</span>') +
+      (sameEmail(d.email, currentUser.email) ? '' : ' <button type="button" class="link-btn" data-dev-reset="' + escapeAttr(d.email) + '">Reset password</button>') +
+      '</div></div>' +
+      (sameEmail(d.email, currentUser.email) ? '' :
+        '<div class="dev-reset-form" data-dev-reset-form="' + escapeAttr(d.email) + '" hidden>' +
+          '<label>New temporary password for ' + escapeHtml(d.fullName) +
+          ' <input type="text" class="dev-reset-pw" autocomplete="off" spellcheck="false" placeholder="At least 8 characters"></label>' +
+          '<p class="muted" style="font-size:13px;margin:0 0 8px;">Send it to them privately; they can change it under "Change my password" after signing in.</p>' +
+          '<div class="user-edit-actions"><button type="button" class="btn-secondary" data-dev-reset-cancel>Cancel</button>' +
+          '<button type="button" class="btn-primary" data-dev-reset-save>Set password</button></div>' +
+          '<p class="dev-msg"></p></div>')
+  ).join('') + '<p class="muted" style="font-size:13px;">Passwords can\'t be shown or resent — only a scrambled version is kept. Use Reset password to set a temporary one. To switch a developer off, use Approvals → All users → Edit.</p>';
 }
+
+document.getElementById('devList').addEventListener('click', async (e) => {
+  const open = e.target.closest('[data-dev-reset]');
+  if (open) {
+    document.querySelectorAll('[data-dev-reset-form]').forEach((f) => { f.hidden = f.dataset.devResetForm !== open.dataset.devReset || !f.hidden; });
+    const form = document.querySelector('[data-dev-reset-form="' + open.dataset.devReset + '"]');
+    if (form && !form.hidden) form.querySelector('input').focus();
+    return;
+  }
+  const form = e.target.closest('[data-dev-reset-form]');
+  if (!form) return;
+  const msg = form.querySelector('.dev-msg');
+  if (e.target.closest('[data-dev-reset-cancel]')) { form.hidden = true; form.querySelector('input').value = ''; msg.textContent = ''; return; }
+  const save = e.target.closest('[data-dev-reset-save]');
+  if (!save) return;
+  const pw = form.querySelector('input').value;
+  if (pw.length < 8) { msg.className = 'dev-msg is-error'; msg.textContent = 'Use at least 8 characters.'; return; }
+  save.disabled = true; save.textContent = 'Saving…';
+  const res = await apiPost('resetDeveloperPassword', { requesterEmail: currentUser.email, targetEmail: form.dataset.devResetForm, password: pw });
+  save.disabled = false; save.textContent = 'Set password';
+  msg.className = 'dev-msg' + (res.success ? '' : ' is-error');
+  msg.textContent = res.success ? 'Done. Their new temporary password is set — send it to them privately.' : (res.error === 'Unknown action' ? 'Redeploy the Apps Script first.' : res.error);
+  if (res.success) form.querySelector('input').value = '';
+});
 
 function renderDevLog(log) {
   const el = document.getElementById('devLog');

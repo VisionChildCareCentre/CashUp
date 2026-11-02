@@ -918,3 +918,9 @@ textarea { min-height: 60px; resize: vertical; }
 .access-log > .muted { padding: 10px 12px; margin: 0; }
 @media (max-width: 560px) { .access-row { grid-template-columns: 1fr; gap: 2px; } }
 .dev-msg.is-error { color: var(--danger); }
+.dev-reset-form { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: -4px 0 12px; background: #fafcff; }
+.dev-reset-form[hidden] { display: none; }
+.dev-row-tags .link-btn { margin-left: 8px; }
+.user-sessions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 13.5px; margin: 4px 0 8px; }
+.user-sessions[hidden] { display: none; }
+#userEditSessions [hidden] { display: none !important; }
