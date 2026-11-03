@@ -471,7 +471,9 @@
         <button type="button" class="active" data-as="overview">Overview</button>
         <button type="button" data-as="register">Register</button>
         <button type="button" data-as="transfers">Transfers <span class="nav-badge" id="assetTrBadge" hidden></span></button>
+        <button type="button" data-as="counts">Counts <span class="nav-badge" id="assetCtBadge" hidden></span></button>
         <button type="button" data-as="maintenance" id="assetMtTabBtn" hidden>Maintenance</button>
+        <button type="button" data-as="disposals" id="assetDpTabBtn" hidden>Disposals <span class="nav-badge" id="assetDpBadge" hidden></span></button>
         <button type="button" data-as="categories" id="assetCatTabBtn" hidden>Categories</button>
       </div>
       <p class="error-text" id="assetError" hidden></p>
@@ -484,6 +486,7 @@
         <div class="fin-kpis asset-kpis">
           <div class="kpi-card"><span class="kpi-label">Assets held</span><span class="kpi-value" id="assetKpiCount">0</span></div>
           <div class="kpi-card" id="assetKpiValueCard"><span class="kpi-label">Recorded value</span><span class="kpi-value" id="assetKpiValue">R 0.00</span></div>
+          <div class="kpi-card" id="assetKpiBookCard"><span class="kpi-label">Book value today</span><span class="kpi-value" id="assetKpiBook">R 0.00</span></div>
           <div class="kpi-card" id="assetKpiAttnCard"><span class="kpi-label">Needs attention</span><span class="kpi-value" id="assetKpiAttn">0</span></div>
         </div>
         <h2>Needs attention</h2>
@@ -504,7 +507,7 @@
           <label>Category <select id="assetCatFilter"><option value="">All categories</option></select></label>
           <label>Status <select id="assetStatusFilter"></select></label>
         </div>
-        <p class="muted" id="assetCount"></p>
+        <div class="asset-count-row"><p class="muted" id="assetCount"></p><button type="button" class="btn-secondary asset-print-btn" id="assetPrintBtn">Print list</button></div>
         <div class="asset-table-wrap">
           <table class="asset-table">
             <thead><tr><th>Asset ID</th><th>Name</th><th>Category</th><th>Location</th><th>Status</th><th>Condition</th><th class="asset-val-col">Value</th></tr></thead>
@@ -520,6 +523,27 @@
         <div id="assetTrOpen" class="fin-lines"></div>
         <h2>Finished in the last 60 days</h2>
         <div id="assetTrDone" class="fin-lines"></div>
+      </div>
+
+      <div id="as-counts" class="fin-panel" hidden>
+        <p class="muted">A count checks that every asset is really there. Start one for a location, walk around, and mark each asset Here, Damaged or Missing — on your phone, or print the checklist. Anything damaged or missing goes to Needs attention and Head Office is emailed.</p>
+        <div class="asset-count-start">
+          <label id="assetCtLocWrap">Location <select id="assetCtLocation"></select></label>
+          <button type="button" class="btn-primary" id="assetCtStart">Start a count</button>
+        </div>
+        <p class="error-text" id="assetCtError"></p>
+        <h2>In progress</h2>
+        <div id="assetCtOpen" class="fin-lines"></div>
+        <h2>Finished</h2>
+        <div id="assetCtDone" class="fin-lines"></div>
+      </div>
+
+      <div id="as-disposals" class="fin-panel" hidden>
+        <p class="muted">To sell, donate, scrap or write off an asset, open it and tap <strong>Dispose</strong>. Back Office requests are approved by an Admin; an Admin's own is approved straight away. The asset stays on the register with its final status, so the history is kept.</p>
+        <h2>Waiting for approval</h2>
+        <div id="assetDpPending" class="fin-lines"></div>
+        <h2>Decided</h2>
+        <div id="assetDpDone" class="fin-lines"></div>
       </div>
 
       <div id="as-maintenance" class="fin-panel" hidden>
@@ -1100,6 +1124,7 @@
         <label id="aeAssignedWrap">Assigned to (optional) <input type="text" id="aeAssigned" maxlength="120" placeholder="Person or role" list="aePeopleList"></label>
         <label>Warranty until (optional) <input type="date" id="aeWarranty"></label>
         <label>Next service due (optional) <input type="date" id="aeNextService"></label>
+        <label>Useful life in years (optional) <input type="number" id="aeLife" min="1" max="50" step="1" inputmode="numeric"></label>
       </div>
       <label>Notes (optional) <textarea id="aeNotes" maxlength="1000" rows="2"></textarea></label>
       <div id="aeFileWrap" class="grid-2">
@@ -1164,6 +1189,20 @@
   </div>
 </div>
 
+<!-- ─── ASSETS: VERIFICATION COUNT ──────────────────────────── -->
+<div id="assetCountBackdrop" class="modal-backdrop asset-modal" hidden>
+  <div class="modal job-modal asset-detail-modal" role="dialog" aria-modal="true" aria-labelledby="assetCountTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="assetCountTitle" style="margin:0;">Count</h2>
+        <p class="muted" id="assetCountSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="assetCountClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="assetCountBody"></div>
+  </div>
+</div>
+
 <!-- ─── ASSETS: CATEGORY ────────────────────────────────────── -->
 <div id="assetCatBackdrop" class="modal-backdrop asset-modal" hidden>
   <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="assetCatTitle">
@@ -1176,6 +1215,7 @@
         <label>Name <input type="text" id="acName" maxlength="60"></label>
         <label>Mostly used at <select id="acGroup"></select></label>
       </div>
+      <label>Useful life for depreciation (years) <input type="number" id="acLife" min="1" max="50" step="1" inputmode="numeric"></label>
       <label>Types (separate with commas) <textarea id="acTypes" rows="3" maxlength="2000" placeholder="e.g. Laptop, Monitor, Printer"></textarea></label>
       <label class="fin-check" id="acActiveWrap"><input type="checkbox" id="acActive"> In use (untick to hide it from new assets)</label>
       <p class="error-text" id="assetCatError"></p>
