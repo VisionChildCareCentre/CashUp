@@ -122,7 +122,7 @@ async function fetchWithRetry(doFetch, attempts) {
 // ─────────────────────────────────────────────────────────────────────
 
 const views = ['auth', 'signincode', 'devlogin', 'pending', 'rejected', 'inactive', 'manager', 'shopexp', 'submitted', 'admin',
-  'backoffice', 'deliveries', 'hoexp', 'downloads', 'developer', 'nopages', 'loading'];
+  'backoffice', 'deliveries', 'hoexp', 'assets', 'downloads', 'developer', 'nopages', 'loading'];
 const NAVLESS_VIEWS = ['auth', 'signincode', 'devlogin', 'pending', 'rejected', 'inactive', 'nopages', 'loading'];
 function showView(name) {
   views.forEach((v) => {
@@ -137,6 +137,7 @@ let currentUser = null; // { email, fullName, role, branch }
 document.getElementById('switchUserBtn').addEventListener('click', () => {
   stopBell();
   finSetup = null;
+  assetData = null; assetTab = 'overview';
   if (getDevToken()) { apiPost('devLogout', {}); setDevToken(''); }
   if (getSessionToken()) { apiPost('signOut', {}); setSessionToken(''); }
   localStorage.removeItem(STORAGE_KEY);
@@ -260,14 +261,15 @@ const PAGES = {
   backoffice:  { label: 'Submissions' },
   deliveries:  { label: 'Deliveries', feature: 'deliveries' },
   hoexp:       { label: 'Head Office Finance', feature: 'hoExpenses' },
+  assets:      { label: 'Assets', feature: 'assets' },
   downloads:   { label: 'Downloads', feature: 'downloads' },
   developer:   { label: 'Developer' }
 };
 const ROLE_PAGES = {
-  Manager:    ['cashup', 'shopexp', 'deliveries'],
-  BackOffice: ['backoffice', 'deliveries', 'hoexp', 'downloads'],
-  Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'downloads'],
-  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'downloads', 'developer'],
+  Manager:    ['cashup', 'shopexp', 'deliveries', 'assets'],
+  BackOffice: ['backoffice', 'deliveries', 'hoexp', 'assets', 'downloads'],
+  Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'assets', 'downloads'],
+  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'assets', 'downloads', 'developer'],
   Driver:     ['deliveries']
 };
 const ROLE_HOME = { Manager: 'cashup', BackOffice: 'backoffice', Admin: 'approvals', Developer: 'approvals', Driver: 'deliveries' };
@@ -302,7 +304,7 @@ function openPage(page) {
   document.querySelectorAll('#appNav .app-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
   const activeBtn = document.querySelector('#appNav .app-nav-btn.active');
   if (activeBtn && activeBtn.scrollIntoView) activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  if (page !== 'approvals' && page !== 'dashboard') document.body.classList.remove('wide-admin');
+  if (page !== 'approvals' && page !== 'dashboard') document.body.classList.toggle('wide-admin', page === 'assets');
 
   switch (page) {
     case 'cashup':
@@ -330,6 +332,10 @@ function openPage(page) {
     case 'hoexp':
       showView('hoexp');
       loadFinancePage();
+      break;
+    case 'assets':
+      showView('assets');
+      loadAssetsPage();
       break;
     case 'downloads':
       showView('downloads');
@@ -4093,6 +4099,574 @@ function nudgeModal(id) {
   void modal.offsetWidth; // restart the animation
   modal.classList.add('modal-nudge');
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// ASSETS (Pro feature "assets") — Stage 1: the Asset Register
+// Admin & Back Office add and edit; Store Managers see their own branch's
+// assets (no values) and can report one as damaged or missing.
+// ─────────────────────────────────────────────────────────────────────
+
+let assetData = null;      // the 'assets' response
+let assetTab = 'overview';
+let assetOpen = null;      // { asset, history, files } shown in the detail window
+let assetEditing = null;   // asset being edited, or null for a new one
+let assetFileData = '';
+let assetReportPhoto = '';
+let assetReportMode = 'report';
+let assetCatEditing = null;
+let assetLoadSeq = 0;
+
+const ASSET_ATTN_STATUSES = ['Damaged', 'Lost', 'Stolen', 'Under Maintenance'];
+
+function assetWhen(s) { // "2026-03-15 09:30" or "2026-03-15" → "15/03/2026 09:30"
+  return String(s || '').replace(/^(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1');
+}
+function assetHeld(a) { return assetData.gone.indexOf(a.status) === -1; }
+function assetStatusTag(status) {
+  const cls = { 'Available': 'as-ok', 'In Use': 'as-ok', 'Under Maintenance': 'as-warn', 'Damaged': 'as-bad', 'Lost': 'as-bad',
+    'Stolen': 'as-bad', 'Transferred': 'as-info' }[status] || 'as-gone';
+  return '<span class="status-tag ' + cls + '">' + escapeHtml(status || '—') + '</span>';
+}
+function assetDaysUntil(day) {
+  if (!day) return null;
+  const d = new Date(day + 'T00:00:00');
+  if (isNaN(d.getTime())) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
+}
+// Why an asset is in "Needs attention" (empty = it isn't).
+function assetAttention(a) {
+  const out = [];
+  if (a.report) out.push({ level: 'bad', text: 'Reported ' + a.report.type.toLowerCase() + ' by ' + a.report.by + ' on ' + assetWhen(a.report.at).slice(0, 10) });
+  if (assetHeld(a) && ASSET_ATTN_STATUSES.indexOf(a.status) !== -1) out.push({ level: a.status === 'Under Maintenance' ? 'warn' : 'bad', text: a.status });
+  const w = assetHeld(a) ? assetDaysUntil(a.warrantyUntil) : null;
+  if (w !== null && w >= 0 && w <= 30) out.push({ level: 'warn', text: 'Warranty ends ' + (w === 0 ? 'today' : 'in ' + w + ' day' + (w === 1 ? '' : 's')) });
+  return out;
+}
+
+async function loadAssetsPage() {
+  const seq = ++assetLoadSeq;
+  const err = document.getElementById('assetError');
+  err.hidden = true;
+  if (!assetData) {
+    document.getElementById('assetLoading').hidden = false;
+    ['overview', 'register', 'categories'].forEach((p) => { document.getElementById('as-' + p).hidden = true; });
+  }
+  const res = await apiGet('assets', { email: currentUser.email });
+  if (seq !== assetLoadSeq) return;
+  document.getElementById('assetLoading').hidden = true;
+  if (!res.success) {
+    err.textContent = res.error === 'Unknown action' ? 'Assets need the updated Apps Script. Ask a developer to redeploy it.' : (res.error || 'Could not load assets.');
+    err.hidden = false;
+    return;
+  }
+  const first = !assetData;
+  assetData = res;
+  if (first) setupAssetFilters();
+  document.getElementById('assetAddBtn').hidden = !res.canEdit;
+  document.getElementById('assetCatTabBtn').hidden = !res.canManageCategories;
+  if (assetTab === 'categories' && !res.canManageCategories) assetTab = 'overview';
+  showAssetTab(assetTab);
+}
+
+function setupAssetFilters() {
+  const d = assetData;
+  const opts = (list, first) => (first ? '<option value="">' + escapeHtml(first) + '</option>' : '') +
+    list.map((x) => '<option value="' + escapeAttr(x) + '">' + escapeHtml(x) + '</option>').join('');
+  document.getElementById('assetOvLocation').innerHTML = opts(d.locations, 'All locations');
+  document.getElementById('assetLocFilter').innerHTML = opts(d.locations, 'All locations');
+  const multiLoc = d.locations.length > 1;
+  document.getElementById('assetOvFilters').hidden = !multiLoc;
+  document.getElementById('assetLocFilterWrap').hidden = !multiLoc;
+  document.getElementById('assetByLocationWrap').hidden = !multiLoc;
+  document.getElementById('assetStatusFilter').innerHTML = '<option value="held">All held</option><option value="attention">Needs attention</option>' +
+    '<option value="all">Everything (incl. disposed)</option>' + d.statuses.map((s) => '<option value="' + escapeAttr(s.key) + '">' + escapeHtml(s.key) + '</option>').join('');
+  refreshAssetCategoryFilter();
+}
+
+function refreshAssetCategoryFilter() {
+  const sel = document.getElementById('assetCatFilter');
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">All categories</option>' + assetData.categories
+    .filter((c) => c.active || assetData.assets.some((a) => a.categoryId === c.id))
+    .map((c) => '<option value="' + escapeAttr(c.id) + '">' + escapeHtml(c.name) + '</option>').join('');
+  sel.value = keep;
+  if (sel.value !== keep) sel.value = '';
+}
+
+function showAssetTab(tab) {
+  assetTab = tab;
+  document.querySelectorAll('#assetTabs button').forEach((b) => b.classList.toggle('active', b.dataset.as === tab));
+  ['overview', 'register', 'categories'].forEach((p) => { document.getElementById('as-' + p).hidden = p !== tab; });
+  if (!assetData) return;
+  if (tab === 'overview') renderAssetOverview();
+  else if (tab === 'register') renderAssetRegister();
+  else renderAssetCategories();
+}
+
+function assetBarRows(groups, total, onAttr, showValue) {
+  if (!groups.length) return '<p class="muted">No assets yet.</p>';
+  const max = Math.max.apply(null, groups.map((g) => g.count)) || 1;
+  return groups.map((g) =>
+    '<div class="fin-major"><button type="button" class="fin-bar-row" ' + onAttr + '="' + escapeAttr(g.key) + '">' +
+      '<span class="fin-bar-label">' + escapeHtml(g.label) + '</span>' +
+      '<span class="fin-bar-amt">' + g.count + (showValue ? ' <span class="asset-bar-val">· ' + rand(g.value) + '</span>' : '') + '</span>' +
+      '<span class="fin-bar"><span class="fin-bar-fill asset-bar-fill" style="width:' + Math.max(3, Math.round(g.count / max * 100)) + '%"></span></span>' +
+    '</button></div>').join('');
+}
+
+function renderAssetOverview() {
+  const d = assetData;
+  const loc = document.getElementById('assetOvLocation').value;
+  const inLoc = d.assets.filter((a) => !loc || a.location === loc);
+  const held = inLoc.filter(assetHeld);
+  const attn = inLoc.filter((a) => assetAttention(a).length);
+  document.getElementById('assetKpiCount').textContent = held.length;
+  document.getElementById('assetKpiValueCard').hidden = !d.canEdit;
+  document.getElementById('assetKpiValue').textContent = rand(held.reduce((t, a) => t + (a.value || 0), 0));
+  document.getElementById('assetKpiAttn').textContent = attn.length;
+  document.getElementById('assetKpiAttnCard').classList.toggle('is-bad', attn.length > 0);
+  document.querySelector('.asset-kpis').classList.toggle('asset-kpis-2', !d.canEdit);
+
+  document.getElementById('assetAttention').innerHTML = attn.length ? attn.map((a) => {
+    const why = assetAttention(a);
+    return '<button type="button" class="fin-line asset-attn-row" data-asset="' + escapeAttr(a.id) + '">' +
+      '<span class="fin-line-main"><span class="fin-line-desc">' + escapeHtml(a.id) + ' · ' + escapeHtml(a.name) + '</span>' +
+      '<span class="fin-line-meta">' + escapeHtml(a.location) + ' · ' + escapeHtml(a.category) + '</span></span>' +
+      '<span class="asset-attn-why">' + why.map((w) => '<span class="asset-why asset-why-' + w.level + '">' + escapeHtml(w.text) + '</span>').join('') + '</span>' +
+    '</button>';
+  }).join('') : '<p class="muted asset-all-good">Nothing needs attention.</p>';
+
+  const group = (keyOf, labelOf, order) => {
+    const m = {};
+    held.forEach((a) => { const k = keyOf(a); (m[k] = m[k] || { key: k, label: labelOf(a), count: 0, value: 0 }); m[k].count++; m[k].value += a.value || 0; });
+    const list = Object.keys(m).map((k) => m[k]);
+    return order ? list.sort((x, y) => order.indexOf(x.key) - order.indexOf(y.key)) : list.sort((x, y) => y.count - x.count || x.label.localeCompare(y.label));
+  };
+  document.getElementById('assetByLocation').innerHTML = assetBarRows(group((a) => a.location, (a) => a.location, d.locations), held.length, 'data-asset-loc', d.canEdit);
+  document.getElementById('assetByCategory').innerHTML = assetBarRows(group((a) => a.categoryId, (a) => a.category), held.length, 'data-asset-cat', d.canEdit);
+  const counts = {};
+  inLoc.forEach((a) => { counts[a.status] = (counts[a.status] || 0) + 1; });
+  document.getElementById('assetByStatus').innerHTML = d.statuses.filter((s) => counts[s.key]).map((s) =>
+    '<button type="button" class="asset-chip" data-asset-status="' + escapeAttr(s.key) + '" title="' + escapeAttr(s.meaning) + '">' +
+      assetStatusTag(s.key) + '<strong>' + counts[s.key] + '</strong></button>').join('') || '<p class="muted">No assets yet.</p>';
+}
+
+function assetMatches(a, q) {
+  if (!q) return true;
+  return [a.id, a.name, a.type, a.category, a.location, a.department, a.serial, a.assignedTo, a.supplier, a.notes]
+    .join(' ').toLowerCase().indexOf(q) !== -1;
+}
+
+function renderAssetRegister() {
+  const d = assetData;
+  const q = document.getElementById('assetSearch').value.trim().toLowerCase();
+  const loc = document.getElementById('assetLocFilter').value;
+  const cat = document.getElementById('assetCatFilter').value;
+  const st = document.getElementById('assetStatusFilter').value || 'held';
+  const list = d.assets.filter((a) => (!loc || a.location === loc) && (!cat || a.categoryId === cat) &&
+    (st === 'all' || (st === 'held' ? assetHeld(a) : st === 'attention' ? assetAttention(a).length > 0 : a.status === st)) && assetMatches(a, q))
+    .sort((x, y) => (x.id < y.id ? 1 : -1));
+  document.querySelector('.asset-table').classList.toggle('no-values', !d.canEdit);
+  document.getElementById('assetTableBody').innerHTML = list.map((a) =>
+    '<tr data-asset="' + escapeAttr(a.id) + '" tabindex="0">' +
+      '<td class="nowrap asset-id-cell">' + escapeHtml(a.id) + (a.report ? ' <span class="asset-flag" title="Problem reported">!</span>' : '') + '</td>' +
+      '<td class="asset-name-cell"><strong>' + escapeHtml(a.name) + '</strong>' + (a.serial ? '<span class="cell-time">S/N ' + escapeHtml(a.serial) + '</span>' : '') + '</td>' +
+      '<td>' + escapeHtml(a.category) + (a.type ? '<span class="cell-time">' + escapeHtml(a.type) + '</span>' : '') + '</td>' +
+      '<td>' + escapeHtml(a.location) + (a.assignedTo ? '<span class="cell-time">' + escapeHtml(a.assignedTo) + '</span>' : '') + '</td>' +
+      '<td>' + assetStatusTag(a.status) + '</td>' +
+      '<td>' + escapeHtml(a.condition || '—') + '</td>' +
+      '<td class="nowrap asset-val-col">' + (a.value === null ? '—' : rand(a.value)) + '</td>' +
+    '</tr>').join('');
+  document.getElementById('assetEmpty').hidden = list.length > 0;
+  document.getElementById('assetEmpty').textContent = d.assets.length ? 'No assets match.' : (d.canEdit ? 'No assets yet — use + Add asset to start the register.' : 'No assets have been recorded for your branch yet.');
+  const heldTotal = d.assets.filter(assetHeld).length;
+  document.getElementById('assetCount').textContent = 'Showing ' + list.length + ' of ' + d.assets.length + (d.assets.length - heldTotal ? ' · ' + (d.assets.length - heldTotal) + ' no longer held' : '');
+}
+
+function renderAssetCategories() {
+  const d = assetData;
+  const used = {};
+  d.assets.forEach((a) => { used[a.categoryId] = (used[a.categoryId] || 0) + 1; });
+  document.getElementById('assetCatList').innerHTML = d.groups.map((g) => {
+    const cats = d.categories.filter((c) => c.group === g);
+    if (!cats.length) return '';
+    return '<h2 class="asset-cat-group">' + escapeHtml(g) + '</h2>' + cats.map((c) =>
+      '<div class="fin-cat' + (c.active ? '' : ' is-hidden') + '">' +
+        '<div class="fin-cat-head"><strong>' + escapeHtml(c.name) + '</strong>' + (c.active ? '' : ' <span class="status-tag as-gone">Hidden</span>') +
+          '<span class="muted asset-cat-used">' + (used[c.id] || 0) + ' asset' + (used[c.id] === 1 ? '' : 's') + '</span>' +
+          '<button type="button" class="link-btn" data-asset-cat-edit="' + escapeAttr(c.id) + '">Edit</button></div>' +
+        '<p class="muted fin-cat-note">' + (c.types.length ? escapeHtml(c.types.join(', ')) : 'No suggested types') + '</p>' +
+      '</div>').join('');
+  }).join('');
+}
+
+// ── Detail window ───────────────────────────────────────────────────
+
+async function openAssetDetail(id) {
+  assetOpen = null;
+  document.getElementById('assetDetailId').textContent = id;
+  document.getElementById('assetDetailTitle').textContent = 'Loading…';
+  document.getElementById('assetDetailSubtitle').textContent = '';
+  document.getElementById('assetDetailBody').innerHTML = '<p class="muted">Opening…</p>';
+  document.getElementById('assetDetailBackdrop').hidden = false;
+  const res = await apiGet('asset', { email: currentUser.email, id: id });
+  if (document.getElementById('assetDetailBackdrop').hidden) return;
+  if (!res.success) {
+    document.getElementById('assetDetailTitle').textContent = 'Asset';
+    document.getElementById('assetDetailBody').innerHTML = '<p class="error-text">' + escapeHtml(res.error || 'Could not open the asset.') + '</p>';
+    return;
+  }
+  assetOpen = res;
+  renderAssetDetail();
+}
+
+function renderAssetDetail() {
+  const a = assetOpen.asset;
+  const d = assetData;
+  document.getElementById('assetDetailId').textContent = a.id;
+  document.getElementById('assetDetailTitle').textContent = a.name;
+  document.getElementById('assetDetailSubtitle').textContent = a.category + (a.type ? ' · ' + a.type : '');
+  const donated = a.acquired === 'Donated';
+  const row = (label, value) => '<div><dt>' + escapeHtml(label) + '</dt><dd>' + (value || '—') + '</dd></div>';
+  const fields = [
+    row('Status', assetStatusTag(a.status)), row('Condition', escapeHtml(a.condition)),
+    row('Location', escapeHtml(a.location)), row('Department', escapeHtml(a.department)),
+    row('Assigned to', escapeHtml(a.assignedTo)), row('Serial number', escapeHtml(a.serial)),
+    row('Acquired', escapeHtml(a.acquired) + (a.acquiredDate ? ' · ' + escapeHtml(assetWhen(a.acquiredDate)) : ''))
+  ];
+  if (d.canEdit) {
+    fields.push(row(donated ? 'Estimated value' : 'Purchase value', a.value === null ? '' : rand(a.value)));
+    fields.push(row(donated ? 'Donated by' : 'Supplier', escapeHtml(a.supplier)));
+  }
+  fields.push(row('Warranty until', a.warrantyUntil ? escapeHtml(assetWhen(a.warrantyUntil)) : ''));
+  let html = '';
+  if (a.report) {
+    html += '<div class="asset-report-banner"><strong>Problem reported: ' + escapeHtml(a.report.type) + '</strong>' +
+      '<p>' + escapeHtml(a.report.note) + '</p><p class="muted">' + escapeHtml(a.report.by) + ' · ' + escapeHtml(assetWhen(a.report.at)) + '</p>' +
+      (d.canEdit ? '<button type="button" class="btn-secondary" id="assetCloseReportBtn">Mark as dealt with…</button>' : '<p class="muted">Head Office has been told.</p>') + '</div>';
+  }
+  html += '<dl class="asset-fields">' + fields.join('') + '</dl>';
+  if (a.notes) html += '<p class="asset-notes"><strong>Notes</strong><br>' + escapeHtml(a.notes).replace(/\n/g, '<br>') + '</p>';
+  html += '<div class="asset-actions">' +
+    (d.canEdit ? '<button type="button" class="btn-primary" id="assetEditBtn">Edit</button>' : '') +
+    (!a.report && !d.canEdit ? '<button type="button" class="btn-secondary" id="assetReportBtn">Report a problem</button>' : '') + '</div>';
+
+  html += '<h3 class="asset-sub">Files</h3>';
+  html += assetOpen.files.length ? '<ul class="asset-files">' + assetOpen.files.map((f) =>
+    '<li>' + fileButton(f.file, f.kind + ': ' + f.name) + '<span class="muted"> · ' + escapeHtml(assetWhen(f.at).slice(0, 10)) + '</span>' +
+    (d.canEdit ? ' <button type="button" class="link-btn asset-file-rm" data-asset-file-rm="' + escapeAttr(f.id) + '">Remove</button>' : '') + '</li>').join('') + '</ul>'
+    : '<p class="muted">' + (d.canEdit ? 'No photos or documents yet.' : 'No photos yet.') + '</p>';
+  if (d.canEdit) {
+    html += '<div class="asset-file-add"><select id="adFileKind">' + d.fileKinds.map((k) => '<option>' + escapeHtml(k) + '</option>').join('') + '</select>' +
+      '<input type="file" id="adFile" accept="image/*,application/pdf"><button type="button" class="btn-secondary" id="adFileUpload" disabled>Upload</button></div>' +
+      '<p class="error-text" id="adFileError"></p>';
+  }
+  html += '<h3 class="asset-sub">History</h3><ol class="asset-history">' + assetOpen.history.map((h) =>
+    '<li><span class="asset-h-when">' + escapeHtml(assetWhen(h.at)) + '</span><span class="asset-h-what"><strong>' + escapeHtml(h.event) + '</strong>' +
+    (h.details ? ' — ' + escapeHtml(h.details) : '') + '</span><span class="muted asset-h-who">' + escapeHtml(h.by) + '</span></li>').join('') + '</ol>';
+  document.getElementById('assetDetailBody').innerHTML = html;
+
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+  on('assetEditBtn', () => openAssetEdit(assetOpen.asset));
+  on('assetReportBtn', () => openAssetReport('report'));
+  on('assetCloseReportBtn', () => openAssetReport('close'));
+  const fileIn = document.getElementById('adFile');
+  if (fileIn) {
+    let data = '';
+    fileIn.addEventListener('change', async () => {
+      document.getElementById('adFileError').textContent = '';
+      document.getElementById('adFileUpload').disabled = true;
+      try { data = await readAssetFile(fileIn.files[0], true); } catch (ex) { document.getElementById('adFileError').textContent = ex.message; fileIn.value = ''; return; }
+      document.getElementById('adFileUpload').disabled = !data;
+    });
+    on('adFileUpload', async () => {
+      const btn = document.getElementById('adFileUpload');
+      const f = fileIn.files[0];
+      btn.disabled = true; btn.textContent = 'Uploading…';
+      const res = await apiPost('assetFile', { requesterEmail: currentUser.email, id: a.id,
+        file: { kind: document.getElementById('adFileKind').value, name: f ? f.name.replace(/\.[^.]+$/, '') : '', data: data } });
+      btn.textContent = 'Upload';
+      if (!res.success) { btn.disabled = false; document.getElementById('adFileError').textContent = res.error || 'Could not upload.'; return; }
+      openAssetDetail(a.id);
+    });
+  }
+  document.querySelectorAll('[data-asset-file-rm]').forEach((b) => b.addEventListener('click', async () => {
+    if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Tap again to remove'; return; }
+    b.disabled = true;
+    const res = await apiPost('assetFile', { requesterEmail: currentUser.email, op: 'remove', fileId: b.dataset.assetFileRm });
+    if (!res.success) { b.disabled = false; b.textContent = res.error || 'Could not remove'; return; }
+    openAssetDetail(a.id);
+  }));
+}
+
+function closeAssetDetail() { document.getElementById('assetDetailBackdrop').hidden = true; assetOpen = null; }
+
+// Photos are shrunk in the browser; PDFs up to 5 MB go as they are.
+async function readAssetFile(file, allowPdf) {
+  if (!file) return '';
+  if (allowPdf && file.type === 'application/pdf') {
+    if (file.size > 5 * 1024 * 1024) throw new Error('That PDF is too large (max 5 MB).');
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(new Error('Could not read that file.'));
+      r.readAsDataURL(file);
+    });
+  }
+  if (file.type.startsWith('image/')) return resizeImageFileToDataUrl(file, PROOF_MAX_DIMENSION, PROOF_JPEG_QUALITY);
+  throw new Error(allowPdf ? 'Choose a photo or a PDF.' : 'Choose a photo.');
+}
+
+// ── Add / edit ──────────────────────────────────────────────────────
+
+function openAssetEdit(asset) {
+  const d = assetData;
+  assetEditing = asset || null;
+  assetFileData = '';
+  const sel = (id, list, value) => {
+    document.getElementById(id).innerHTML = list.map((x) => '<option value="' + escapeAttr(x.value) + '">' + escapeHtml(x.label) + '</option>').join('');
+    document.getElementById(id).value = value;
+  };
+  document.getElementById('assetEditTitle').textContent = asset ? 'Edit ' + asset.id : 'Add asset';
+  document.getElementById('assetInvNote').hidden = !!asset;
+  const cats = d.categories.filter((c) => c.active || (asset && asset.categoryId === c.id));
+  document.getElementById('aeCategory').innerHTML = '<option value="">Choose…</option>' + d.groups.map((g) => {
+    const inG = cats.filter((c) => c.group === g);
+    return inG.length ? '<optgroup label="' + escapeAttr(g) + '">' + inG.map((c) => '<option value="' + escapeAttr(c.id) + '">' + escapeHtml(c.name) + '</option>').join('') + '</optgroup>' : '';
+  }).join('');
+  document.getElementById('aeCategory').value = asset ? asset.categoryId : '';
+  const defaultLoc = d.locations.indexOf(document.getElementById('assetLocFilter').value) !== -1 ? document.getElementById('assetLocFilter').value : d.locations[0];
+  sel('aeLocation', d.locations.map((x) => ({ value: x, label: x })), asset ? asset.location : defaultLoc);
+  sel('aeStatus', d.statuses.map((s) => ({ value: s.key, label: s.key })), asset ? asset.status : 'In Use');
+  sel('aeCondition', d.conditions.map((x) => ({ value: x, label: x })), asset ? asset.condition : 'Good');
+  sel('aeAcquired', d.acquired.map((x) => ({ value: x, label: x === 'Donated' ? 'Donated (for the charity to use)' : x })), asset ? asset.acquired : 'Purchased');
+  sel('aeFileKind', d.fileKinds.map((x) => ({ value: x, label: x })), 'Photo');
+  document.getElementById('aeDeptList').innerHTML = d.departments.map((x) => '<option value="' + escapeAttr(x) + '">').join('');
+  const v = (id, val) => { document.getElementById(id).value = val === null || val === undefined ? '' : val; };
+  v('aeName', asset && asset.name); v('aeType', asset && asset.type); v('aeDepartment', asset && asset.department);
+  v('aeDate', asset && asset.acquiredDate); v('aeValue', asset && asset.value); v('aeSupplier', asset && asset.supplier);
+  v('aeSerial', asset && asset.serial); v('aeAssigned', asset && asset.assignedTo); v('aeWarranty', asset && asset.warrantyUntil);
+  v('aeNotes', asset && asset.notes); v('aeReason', ''); v('aeFile', '');
+  document.getElementById('aeFileWrap').hidden = !!asset; // on an existing asset, files are added in its window
+  document.getElementById('assetEditError').textContent = '';
+  document.getElementById('assetEditSave').disabled = false;
+  document.getElementById('assetEditSave').textContent = 'Save';
+  onAssetCategoryChange(); onAssetStatusChange(); onAssetAcquiredChange();
+  document.getElementById('assetEditBackdrop').hidden = false;
+  if (!asset) setTimeout(() => document.getElementById('aeName').focus(), 50);
+}
+
+function onAssetCategoryChange() {
+  const c = assetData.categories.filter((x) => x.id === document.getElementById('aeCategory').value)[0];
+  document.getElementById('aeTypeList').innerHTML = (c ? c.types : []).map((t) => '<option value="' + escapeAttr(t) + '">').join('');
+}
+function onAssetStatusChange() {
+  const st = document.getElementById('aeStatus').value;
+  const s = assetData.statuses.filter((x) => x.key === st)[0];
+  document.getElementById('aeStatusHint').textContent = s ? st + ': ' + s.meaning.toLowerCase() + '.' : '';
+  const changed = !assetEditing || assetEditing.status !== st;
+  const needed = assetData.reasonNeeded.indexOf(st) !== -1 && changed;
+  document.getElementById('aeReasonWrap').hidden = !(needed || (assetEditing && changed));
+  document.getElementById('aeReasonLabel').textContent = needed ? 'Why is it ' + st.toLowerCase() + '? (shows in the history)' : 'Note for the history (optional)';
+}
+function onAssetAcquiredChange() {
+  const donated = document.getElementById('aeAcquired').value === 'Donated';
+  document.getElementById('aeDateLabel').textContent = donated ? 'Date received' : 'Purchase date';
+  document.getElementById('aeValueLabel').textContent = donated ? 'Estimated value (R)' : 'Purchase value (R)';
+  document.getElementById('aeSupplierLabel').textContent = donated ? 'Donated by' : 'Supplier';
+}
+
+async function saveAssetEdit() {
+  const err = document.getElementById('assetEditError');
+  const btn = document.getElementById('assetEditSave');
+  err.textContent = '';
+  const g = (id) => document.getElementById(id).value;
+  const asset = {
+    name: g('aeName').trim(), categoryId: g('aeCategory'), type: g('aeType').trim(), location: g('aeLocation'),
+    department: g('aeDepartment').trim(), status: g('aeStatus'), condition: g('aeCondition'), acquired: g('aeAcquired'),
+    acquiredDate: g('aeDate'), value: g('aeValue'), supplier: g('aeSupplier').trim(), serial: g('aeSerial').trim(),
+    assignedTo: g('aeAssigned').trim(), warrantyUntil: g('aeWarranty'), notes: g('aeNotes').trim()
+  };
+  if (!asset.name) { err.textContent = 'Give the asset a name.'; return; }
+  if (!asset.categoryId) { err.textContent = 'Choose a category.'; return; }
+  const reason = document.getElementById('aeReasonWrap').hidden ? '' : g('aeReason').trim();
+  const changed = !assetEditing || assetEditing.status !== asset.status;
+  if (changed && assetData.reasonNeeded.indexOf(asset.status) !== -1 && !reason) { err.textContent = 'Add a note explaining why it is ' + asset.status.toLowerCase() + '.'; return; }
+  const payload = { requesterEmail: currentUser.email, asset: asset, reason: reason };
+  if (assetEditing) { asset.id = assetEditing.id; payload.version = assetEditing.version; }
+  else {
+    payload.requestId = 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    if (assetFileData) {
+      const f = document.getElementById('aeFile').files[0];
+      payload.file = { kind: g('aeFileKind'), name: f ? f.name.replace(/\.[^.]+$/, '') : '', data: assetFileData };
+    }
+  }
+  btn.disabled = true; btn.textContent = payload.file ? 'Uploading…' : 'Saving…';
+  const res = await apiPost('assetSave', payload);
+  btn.disabled = false; btn.textContent = 'Save';
+  if (!res.success) { err.textContent = res.error || 'Could not save.'; return; }
+  document.getElementById('assetEditBackdrop').hidden = true;
+  const id = res.id;
+  const wasNew = !assetEditing;
+  assetEditing = null;
+  await loadAssetsPage();
+  if (wasNew && assetTab !== 'register') showAssetTab('register');
+  if (res.warning) alertAssetNotice(res.warning);
+  openAssetDetail(id);
+}
+
+function alertAssetNotice(msg) {
+  const el = document.getElementById('assetError');
+  el.textContent = msg; el.hidden = false;
+}
+
+// ── Report a problem / close a report ───────────────────────────────
+
+function openAssetReport(mode) {
+  const a = assetOpen && assetOpen.asset;
+  if (!a) return;
+  assetReportMode = mode;
+  assetReportPhoto = '';
+  const closing = mode === 'close';
+  document.getElementById('assetReportTitle').textContent = closing ? 'Mark as dealt with' : 'Report a problem';
+  document.getElementById('assetReportSubtitle').textContent = a.id + ' · ' + a.name;
+  document.getElementById('arTypeWrap').hidden = closing;
+  document.getElementById('arPhotoWrap').hidden = closing;
+  document.getElementById('arStatusWrap').hidden = !closing;
+  document.getElementById('arType').innerHTML = assetData.reportTypes.map((t) => '<option>' + escapeHtml(t) + '</option>').join('');
+  document.getElementById('arStatus').innerHTML = assetData.statuses.map((s) => '<option value="' + escapeAttr(s.key) + '">' + escapeHtml(s.key) + '</option>').join('');
+  document.getElementById('arStatus').value = a.status;
+  document.getElementById('arNoteLabel').textContent = closing ? 'What was done?' : 'What happened?';
+  document.getElementById('arHint').textContent = closing
+    ? 'Reported: ' + a.report.type + ' — ' + a.report.note + ' (' + a.report.by + ')'
+    : 'Admin and Back Office are emailed straight away. It stays on the asset until they deal with it.';
+  document.getElementById('arNote').value = '';
+  document.getElementById('arPhoto').value = '';
+  document.getElementById('assetReportError').textContent = '';
+  document.getElementById('assetReportSave').textContent = closing ? 'Save' : 'Send report';
+  document.getElementById('assetReportSave').disabled = false;
+  document.getElementById('assetReportBackdrop').hidden = false;
+}
+
+async function saveAssetReport() {
+  const a = assetOpen && assetOpen.asset;
+  const err = document.getElementById('assetReportError');
+  const btn = document.getElementById('assetReportSave');
+  err.textContent = '';
+  const note = document.getElementById('arNote').value.trim();
+  if (!note) { err.textContent = assetReportMode === 'close' ? 'Add a short note on what was done.' : 'Describe what happened.'; return; }
+  const closing = assetReportMode === 'close';
+  const payload = closing
+    ? { requesterEmail: currentUser.email, id: a.id, note: note, status: document.getElementById('arStatus').value }
+    : { requesterEmail: currentUser.email, id: a.id, type: document.getElementById('arType').value, note: note, photo: assetReportPhoto || '' };
+  btn.disabled = true; btn.textContent = assetReportPhoto ? 'Uploading…' : 'Sending…';
+  const res = await apiPost(closing ? 'assetReportClose' : 'assetReport', payload);
+  btn.disabled = false; btn.textContent = closing ? 'Save' : 'Send report';
+  if (!res.success) { err.textContent = res.error || 'Could not save.'; return; }
+  document.getElementById('assetReportBackdrop').hidden = true;
+  await loadAssetsPage();
+  if (res.warning) alertAssetNotice(res.warning);
+  openAssetDetail(a.id);
+}
+
+// ── Categories (Admins) ─────────────────────────────────────────────
+
+function openAssetCategory(cat) {
+  assetCatEditing = cat || null;
+  document.getElementById('assetCatTitle').textContent = cat ? 'Edit category' : 'New category';
+  document.getElementById('acGroup').innerHTML = assetData.groups.map((g) => '<option>' + escapeHtml(g) + '</option>').join('');
+  document.getElementById('acName').value = cat ? cat.name : '';
+  document.getElementById('acGroup').value = cat ? cat.group : 'Shared';
+  document.getElementById('acTypes').value = cat ? cat.types.join(', ') : '';
+  document.getElementById('acActive').checked = cat ? cat.active : true;
+  document.getElementById('acActiveWrap').hidden = !cat;
+  document.getElementById('assetCatError').textContent = '';
+  document.getElementById('assetCatBackdrop').hidden = false;
+  setTimeout(() => document.getElementById('acName').focus(), 50);
+}
+
+async function saveAssetCategory() {
+  const err = document.getElementById('assetCatError');
+  const btn = document.getElementById('assetCatSave');
+  const name = document.getElementById('acName').value.trim();
+  err.textContent = '';
+  if (!name) { err.textContent = 'Give the category a name.'; return; }
+  const payload = { requesterEmail: currentUser.email, op: assetCatEditing ? 'update' : 'add', name: name,
+    group: document.getElementById('acGroup').value, types: document.getElementById('acTypes').value };
+  if (assetCatEditing) { payload.id = assetCatEditing.id; payload.active = document.getElementById('acActive').checked; }
+  btn.disabled = true;
+  const res = await apiPost('assetCategory', payload);
+  btn.disabled = false;
+  if (!res.success) { err.textContent = res.error || 'Could not save.'; return; }
+  document.getElementById('assetCatBackdrop').hidden = true;
+  await loadAssetsPage();
+  refreshAssetCategoryFilter();
+}
+
+// ── Wiring ──────────────────────────────────────────────────────────
+
+(function wireAssets() {
+  const el = (id) => document.getElementById(id);
+  document.querySelectorAll('#assetTabs button').forEach((b) => b.addEventListener('click', () => showAssetTab(b.dataset.as)));
+  el('assetAddBtn').addEventListener('click', () => openAssetEdit(null));
+  el('assetOvLocation').addEventListener('change', renderAssetOverview);
+  ['assetSearch', 'assetLocFilter', 'assetCatFilter', 'assetStatusFilter'].forEach((id) =>
+    el(id).addEventListener(id === 'assetSearch' ? 'input' : 'change', renderAssetRegister));
+  el('view-assets').addEventListener('click', (e) => {
+    const row = e.target.closest('[data-asset]');
+    if (row) { openAssetDetail(row.dataset.asset); return; }
+    const toReg = (loc, cat, st) => {
+      el('assetSearch').value = '';
+      el('assetLocFilter').value = loc !== undefined ? loc : el('assetOvLocation').value;
+      el('assetCatFilter').value = cat || '';
+      el('assetStatusFilter').value = st || 'held';
+      showAssetTab('register');
+    };
+    const loc = e.target.closest('[data-asset-loc]');
+    if (loc) { toReg(loc.dataset.assetLoc); return; }
+    const cat = e.target.closest('[data-asset-cat]');
+    if (cat) { toReg(undefined, cat.dataset.assetCat); return; }
+    const st = e.target.closest('[data-asset-status]');
+    if (st) { toReg(undefined, '', st.dataset.assetStatus); return; }
+    const ce = e.target.closest('[data-asset-cat-edit]');
+    if (ce) openAssetCategory(assetData.categories.filter((c) => c.id === ce.dataset.assetCatEdit)[0]);
+  });
+  el('assetTableBody').addEventListener('keydown', (e) => {
+    const row = e.target.closest('tr[data-asset]');
+    if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openAssetDetail(row.dataset.asset); }
+  });
+  el('assetCatAdd').addEventListener('click', () => openAssetCategory(null));
+  el('assetDetailClose').addEventListener('click', closeAssetDetail);
+  el('assetEditClose').addEventListener('click', () => { el('assetEditBackdrop').hidden = true; });
+  el('assetEditCancel').addEventListener('click', () => { el('assetEditBackdrop').hidden = true; });
+  el('assetEditSave').addEventListener('click', saveAssetEdit);
+  el('aeCategory').addEventListener('change', onAssetCategoryChange);
+  el('aeStatus').addEventListener('change', onAssetStatusChange);
+  el('aeAcquired').addEventListener('change', onAssetAcquiredChange);
+  el('aeFile').addEventListener('change', async (e) => {
+    assetFileData = '';
+    el('assetEditError').textContent = '';
+    try { assetFileData = await readAssetFile(e.target.files[0], true); }
+    catch (ex) { el('assetEditError').textContent = ex.message; e.target.value = ''; }
+  });
+  el('assetReportClose').addEventListener('click', () => { el('assetReportBackdrop').hidden = true; });
+  el('assetReportCancel').addEventListener('click', () => { el('assetReportBackdrop').hidden = true; });
+  el('assetReportSave').addEventListener('click', saveAssetReport);
+  el('arPhoto').addEventListener('change', async (e) => {
+    assetReportPhoto = '';
+    el('assetReportError').textContent = '';
+    try { assetReportPhoto = await readAssetFile(e.target.files[0], false); }
+    catch (ex) { el('assetReportError').textContent = ex.message; e.target.value = ''; }
+  });
+  el('assetCatClose').addEventListener('click', () => { el('assetCatBackdrop').hidden = true; });
+  el('assetCatCancel').addEventListener('click', () => { el('assetCatBackdrop').hidden = true; });
+  el('assetCatSave').addEventListener('click', saveAssetCategory);
+  ['assetDetailBackdrop', 'assetEditBackdrop', 'assetReportBackdrop', 'assetCatBackdrop'].forEach((id) => {
+    if (id === 'assetDetailBackdrop') el(id).addEventListener('click', (e) => { if (e.target.id === id) closeAssetDetail(); });
+    else guardModalBackdrop(id);
+  });
+})();
 
 function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;');

@@ -460,6 +460,66 @@
     </div>
   </section>
 
+  <!-- ─── ASSETS (Pro: assets) ──────────────────────────────── -->
+  <section id="view-assets" class="view" hidden>
+    <div class="card">
+      <div class="jobs-head">
+        <h1>Assets</h1>
+        <button type="button" id="assetAddBtn" class="btn-primary jobs-new-btn" hidden>+ Add asset</button>
+      </div>
+      <div class="sub-switch fin-tabs" id="assetTabs">
+        <button type="button" class="active" data-as="overview">Overview</button>
+        <button type="button" data-as="register">Register</button>
+        <button type="button" data-as="categories" id="assetCatTabBtn" hidden>Categories</button>
+      </div>
+      <p class="error-text" id="assetError" hidden></p>
+      <p class="muted" id="assetLoading">Loading assets…</p>
+
+      <div id="as-overview" class="fin-panel" hidden>
+        <div class="fin-filters" id="assetOvFilters">
+          <label>Location <select id="assetOvLocation"><option value="">All locations</option></select></label>
+        </div>
+        <div class="fin-kpis asset-kpis">
+          <div class="kpi-card"><span class="kpi-label">Assets held</span><span class="kpi-value" id="assetKpiCount">0</span></div>
+          <div class="kpi-card" id="assetKpiValueCard"><span class="kpi-label">Recorded value</span><span class="kpi-value" id="assetKpiValue">R 0.00</span></div>
+          <div class="kpi-card" id="assetKpiAttnCard"><span class="kpi-label">Needs attention</span><span class="kpi-value" id="assetKpiAttn">0</span></div>
+        </div>
+        <h2>Needs attention</h2>
+        <div id="assetAttention" class="fin-lines"></div>
+        <div class="fin-columns asset-ov-cols">
+          <div id="assetByLocationWrap"><h2>By location</h2><div id="assetByLocation" class="fin-majors"></div></div>
+          <div><h2>By category</h2><div id="assetByCategory" class="fin-majors"></div></div>
+        </div>
+        <h2>By status</h2>
+        <div id="assetByStatus" class="asset-chips"></div>
+        <p class="muted fin-footnote">Assets are things the charity owns and uses. Donated stock that is for sale is not an asset and isn't recorded here. "Held" leaves out assets that were disposed of, written off or sold.</p>
+      </div>
+
+      <div id="as-register" class="fin-panel" hidden>
+        <div class="asset-filters">
+          <label class="asset-search">Search <input type="search" id="assetSearch" placeholder="ID, name, serial number, assigned to…"></label>
+          <label id="assetLocFilterWrap">Location <select id="assetLocFilter"><option value="">All locations</option></select></label>
+          <label>Category <select id="assetCatFilter"><option value="">All categories</option></select></label>
+          <label>Status <select id="assetStatusFilter"></select></label>
+        </div>
+        <p class="muted" id="assetCount"></p>
+        <div class="asset-table-wrap">
+          <table class="asset-table">
+            <thead><tr><th>Asset ID</th><th>Name</th><th>Category</th><th>Location</th><th>Status</th><th>Condition</th><th class="asset-val-col">Value</th></tr></thead>
+            <tbody id="assetTableBody"></tbody>
+          </table>
+        </div>
+        <p class="muted" id="assetEmpty" hidden>No assets match.</p>
+      </div>
+
+      <div id="as-categories" class="fin-panel" hidden>
+        <p class="muted">Each category has a list of suggested types that show when adding an asset. Rename a category, change its types, or hide one you don't use. Hidden categories stay on assets that already use them.</p>
+        <button type="button" class="btn-secondary" id="assetCatAdd">+ Add category</button>
+        <div id="assetCatList"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- ─── DOWNLOADS (Pro: downloads) ────────────────────────── -->
   <section id="view-downloads" class="view" hidden>
     <div class="card">
@@ -968,6 +1028,114 @@
           <label>Reason for deleting <input type="text" id="finDeleteReason" maxlength="200"></label>
           <button type="button" class="btn-primary btn-danger" id="finDeleteConfirm">Delete entry</button>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── ASSETS: DETAIL ─────────────────────────────────────── -->
+<div id="assetDetailBackdrop" class="modal-backdrop asset-modal" hidden>
+  <div class="modal job-modal asset-detail-modal" role="dialog" aria-modal="true" aria-labelledby="assetDetailTitle">
+    <div class="modal-head">
+      <div>
+        <p class="asset-id-big" id="assetDetailId"></p>
+        <h2 id="assetDetailTitle" style="margin:0;"></h2>
+        <p class="muted" id="assetDetailSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="assetDetailClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="assetDetailBody"></div>
+  </div>
+</div>
+
+<!-- ─── ASSETS: ADD / EDIT ─────────────────────────────────── -->
+<div id="assetEditBackdrop" class="modal-backdrop asset-modal" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="assetEditTitle">
+    <div class="modal-head">
+      <h2 id="assetEditTitle" style="margin:0;">Add asset</h2>
+      <button type="button" class="modal-close" id="assetEditClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="asset-inv-note" id="assetInvNote">Only add things the charity uses. Donated stock that is for sale is not an asset.</p>
+      <label>Name <input type="text" id="aeName" maxlength="120" placeholder="e.g. HP LaserJet printer"></label>
+      <div class="grid-2">
+        <label>Category <select id="aeCategory"></select></label>
+        <label>Type <input type="text" id="aeType" maxlength="80" list="aeTypeList" placeholder="Choose or type"></label>
+        <label>Location <select id="aeLocation"></select></label>
+        <label>Department (optional) <input type="text" id="aeDepartment" maxlength="60" list="aeDeptList"></label>
+        <label>Status <select id="aeStatus"></select></label>
+        <label>Condition <select id="aeCondition"></select></label>
+      </div>
+      <p class="muted asset-status-hint" id="aeStatusHint"></p>
+      <label id="aeReasonWrap" hidden><span id="aeReasonLabel">Note for the history</span> <input type="text" id="aeReason" maxlength="300"></label>
+      <div class="grid-2">
+        <label>How acquired <select id="aeAcquired"></select></label>
+        <label><span id="aeDateLabel">Purchase date</span> (optional) <input type="date" id="aeDate"></label>
+        <label><span id="aeValueLabel">Purchase value (R)</span> (optional) <input type="number" step="0.01" min="0" inputmode="decimal" id="aeValue"></label>
+        <label><span id="aeSupplierLabel">Supplier</span> (optional) <input type="text" id="aeSupplier" maxlength="120"></label>
+        <label>Serial number (optional) <input type="text" id="aeSerial" maxlength="80"></label>
+        <label>Assigned to (optional) <input type="text" id="aeAssigned" maxlength="120" placeholder="Person or role"></label>
+        <label>Warranty until (optional) <input type="date" id="aeWarranty"></label>
+      </div>
+      <label>Notes (optional) <textarea id="aeNotes" maxlength="1000" rows="2"></textarea></label>
+      <div id="aeFileWrap" class="grid-2">
+        <label>Attach a file (optional) <input type="file" id="aeFile" accept="image/*,application/pdf"></label>
+        <label>File is a <select id="aeFileKind"></select></label>
+      </div>
+      <datalist id="aeTypeList"></datalist>
+      <datalist id="aeDeptList"></datalist>
+      <p class="error-text" id="assetEditError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="assetEditCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="assetEditSave">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── ASSETS: REPORT A PROBLEM / CLOSE A REPORT ───────────── -->
+<div id="assetReportBackdrop" class="modal-backdrop asset-modal" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="assetReportTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="assetReportTitle" style="margin:0;">Report a problem</h2>
+        <p class="muted" id="assetReportSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="assetReportClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <label id="arTypeWrap">What's wrong? <select id="arType"></select></label>
+      <label><span id="arNoteLabel">What happened?</span> <textarea id="arNote" maxlength="500" rows="3"></textarea></label>
+      <label id="arPhotoWrap">Photo (optional) <input type="file" id="arPhoto" accept="image/*"></label>
+      <label id="arStatusWrap" hidden>Status after this <select id="arStatus"></select></label>
+      <p class="muted" id="arHint"></p>
+      <p class="error-text" id="assetReportError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="assetReportCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="assetReportSave">Send report</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── ASSETS: CATEGORY ────────────────────────────────────── -->
+<div id="assetCatBackdrop" class="modal-backdrop asset-modal" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="assetCatTitle">
+    <div class="modal-head">
+      <h2 id="assetCatTitle" style="margin:0;">Category</h2>
+      <button type="button" class="modal-close" id="assetCatClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="grid-2">
+        <label>Name <input type="text" id="acName" maxlength="60"></label>
+        <label>Mostly used at <select id="acGroup"></select></label>
+      </div>
+      <label>Types (separate with commas) <textarea id="acTypes" rows="3" maxlength="2000" placeholder="e.g. Laptop, Monitor, Printer"></textarea></label>
+      <label class="fin-check" id="acActiveWrap"><input type="checkbox" id="acActive"> In use (untick to hide it from new assets)</label>
+      <p class="error-text" id="assetCatError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="assetCatCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="assetCatSave">Save</button>
       </div>
     </div>
   </div>
