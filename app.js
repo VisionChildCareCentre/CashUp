@@ -1686,7 +1686,6 @@ function renderUsersTable() {
     return '<tr>' +
       '<td class="nowrap">' + dateCell(u.timestamp) + '</td>' +
       '<td class="col-name">' + escapeHtml(u.fullName) + '</td>' +
-      '<td>' + escapeHtml(u.email) + '</td>' +
       '<td>' + escapeHtml(u.requestedBranch || '—') + '</td>' +
       '<td>' + statusTag(u.status) + '</td>' +
       '<td class="nowrap">' + escapeHtml(ROLE_LABELS[u.role] || u.role || '—') +
@@ -1722,7 +1721,7 @@ function openUserEdit(user) {
   const isSelf = sameEmail(user.email, usersAdminEmail);
 
   document.getElementById('userEditTitle').textContent = 'Edit ' + (user.fullName || 'user');
-  // Contact and Approved by aren't columns in the table (to keep it narrow),
+  // Email, contact and Approved by aren't columns in the table (to keep it narrow),
   // so they show here.
   const contact = formatContact(user.contact);
   const tel = String(contact || '').replace(/[^\d+]/g, '');
