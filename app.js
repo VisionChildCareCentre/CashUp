@@ -4117,6 +4117,7 @@ let assetCatEditing = null;
 let assetLoadSeq = 0;
 
 const ASSET_ATTN_STATUSES = ['Damaged', 'Lost', 'Stolen', 'Under Maintenance'];
+const ASSET_TABS = ['overview', 'register', 'transfers', 'maintenance', 'categories'];
 
 function assetWhen(s) { // "2026-03-15 09:30" or "2026-03-15" → "15/03/2026 09:30"
   return String(s || '').replace(/^(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1');
@@ -4141,6 +4142,13 @@ function assetAttention(a) {
   if (assetHeld(a) && ASSET_ATTN_STATUSES.indexOf(a.status) !== -1) out.push({ level: a.status === 'Under Maintenance' ? 'warn' : 'bad', text: a.status });
   const w = assetHeld(a) ? assetDaysUntil(a.warrantyUntil) : null;
   if (w !== null && w >= 0 && w <= 30) out.push({ level: 'warn', text: 'Warranty ends ' + (w === 0 ? 'today' : 'in ' + w + ' day' + (w === 1 ? '' : 's')) });
+  const sv = assetHeld(a) ? assetDaysUntil(a.nextServiceDue) : null;
+  if (sv !== null && sv <= 14) out.push({ level: sv < 0 ? 'bad' : 'warn', text: sv < 0 ? 'Service overdue (' + assetWhen(a.nextServiceDue) + ')' : 'Service due ' + (sv === 0 ? 'today' : 'in ' + sv + ' day' + (sv === 1 ? '' : 's')) });
+  if (a.transfer) {
+    const days = Math.max(0, -(assetDaysUntil(a.transfer.startedAt.slice(0, 10)) || 0));
+    if (a.transfer.to === assetData.branch) out.push({ level: 'info', text: 'On its way here from ' + a.transfer.from + ' — confirm when it arrives' });
+    else if (days >= 7) out.push({ level: 'warn', text: 'In transit to ' + a.transfer.to + ' for ' + days + ' days' });
+  }
   return out;
 }
 
@@ -4150,7 +4158,7 @@ async function loadAssetsPage() {
   err.hidden = true;
   if (!assetData) {
     document.getElementById('assetLoading').hidden = false;
-    ['overview', 'register', 'categories'].forEach((p) => { document.getElementById('as-' + p).hidden = true; });
+    ASSET_TABS.forEach((p) => { document.getElementById('as-' + p).hidden = true; });
   }
   const res = await apiGet('assets', { email: currentUser.email });
   if (seq !== assetLoadSeq) return;
@@ -4165,7 +4173,11 @@ async function loadAssetsPage() {
   if (first) setupAssetFilters();
   document.getElementById('assetAddBtn').hidden = !res.canEdit;
   document.getElementById('assetCatTabBtn').hidden = !res.canManageCategories;
-  if (assetTab === 'categories' && !res.canManageCategories) assetTab = 'overview';
+  document.getElementById('assetMtTabBtn').hidden = !res.canEdit;
+  if ((assetTab === 'categories' && !res.canManageCategories) || (assetTab === 'maintenance' && !res.canEdit)) assetTab = 'overview';
+  const incoming = res.assets.filter((a) => a.transfer && a.transfer.to === res.branch).length;
+  const badge = document.getElementById('assetTrBadge');
+  badge.textContent = incoming; badge.hidden = !incoming;
   showAssetTab(assetTab);
 }
 
@@ -4197,10 +4209,12 @@ function refreshAssetCategoryFilter() {
 function showAssetTab(tab) {
   assetTab = tab;
   document.querySelectorAll('#assetTabs button').forEach((b) => b.classList.toggle('active', b.dataset.as === tab));
-  ['overview', 'register', 'categories'].forEach((p) => { document.getElementById('as-' + p).hidden = p !== tab; });
+  ASSET_TABS.forEach((p) => { document.getElementById('as-' + p).hidden = p !== tab; });
   if (!assetData) return;
   if (tab === 'overview') renderAssetOverview();
   else if (tab === 'register') renderAssetRegister();
+  else if (tab === 'transfers') renderAssetTransfers();
+  else if (tab === 'maintenance') renderAssetMaintenance();
   else renderAssetCategories();
 }
 
@@ -4274,7 +4288,7 @@ function renderAssetRegister() {
       '<td class="asset-name-cell"><strong>' + escapeHtml(a.name) + '</strong>' + (a.serial ? '<span class="cell-time">S/N ' + escapeHtml(a.serial) + '</span>' : '') + '</td>' +
       '<td>' + escapeHtml(a.category) + (a.type ? '<span class="cell-time">' + escapeHtml(a.type) + '</span>' : '') + '</td>' +
       '<td>' + escapeHtml(a.location) + (a.assignedTo ? '<span class="cell-time">' + escapeHtml(a.assignedTo) + '</span>' : '') + '</td>' +
-      '<td>' + assetStatusTag(a.status) + '</td>' +
+      '<td>' + assetStatusTag(a.status) + (a.transfer ? '<span class="cell-time">to ' + escapeHtml(a.transfer.to) + '</span>' : '') + '</td>' +
       '<td>' + escapeHtml(a.condition || '—') + '</td>' +
       '<td class="nowrap asset-val-col">' + (a.value === null ? '—' : rand(a.value)) + '</td>' +
     '</tr>').join('');
@@ -4332,7 +4346,8 @@ function renderAssetDetail() {
   const fields = [
     row('Status', assetStatusTag(a.status)), row('Condition', escapeHtml(a.condition)),
     row('Location', escapeHtml(a.location)), row('Department', escapeHtml(a.department)),
-    row('Assigned to', escapeHtml(a.assignedTo)), row('Serial number', escapeHtml(a.serial)),
+    row('Assigned to', escapeHtml(a.assignedTo) + (a.assignedTo && a.assignedSince ? '<span class="muted"> · since ' + escapeHtml(assetWhen(a.assignedSince)) + '</span>' : '')),
+    row('Serial number', escapeHtml(a.serial)),
     row('Acquired', escapeHtml(a.acquired) + (a.acquiredDate ? ' · ' + escapeHtml(assetWhen(a.acquiredDate)) : ''))
   ];
   if (d.canEdit) {
@@ -4340,7 +4355,17 @@ function renderAssetDetail() {
     fields.push(row(donated ? 'Donated by' : 'Supplier', escapeHtml(a.supplier)));
   }
   fields.push(row('Warranty until', a.warrantyUntil ? escapeHtml(assetWhen(a.warrantyUntil)) : ''));
+  fields.push(row('Next service due', a.nextServiceDue ? escapeHtml(assetWhen(a.nextServiceDue)) : ''));
+  const held = assetHeld(a);
   let html = '';
+  if (a.transfer) {
+    const t = a.transfer;
+    html += '<div class="asset-transit-banner"><strong>On its way: ' + escapeHtml(t.from) + ' → ' + escapeHtml(t.to) + '</strong>' +
+      '<p class="muted">' + escapeHtml(t.id) + ' · sent ' + escapeHtml(assetWhen(t.startedAt)) + ' by ' + escapeHtml(t.startedBy) +
+      (t.takenBy ? ' · taken by ' + escapeHtml(t.takenBy) : '') + '</p>' + (t.reason ? '<p>' + escapeHtml(t.reason) + '</p>' : '') +
+      '<div class="asset-actions">' + (assetOpen.canReceive ? '<button type="button" class="btn-primary" id="assetReceiveBtn">Confirm it arrived</button>' : '') +
+      (d.canEdit || t.from === d.branch ? '<button type="button" class="btn-secondary" id="assetCancelTrBtn">Cancel transfer</button>' : '') + '</div></div>';
+  }
   if (a.report) {
     html += '<div class="asset-report-banner"><strong>Problem reported: ' + escapeHtml(a.report.type) + '</strong>' +
       '<p>' + escapeHtml(a.report.note) + '</p><p class="muted">' + escapeHtml(a.report.by) + ' · ' + escapeHtml(assetWhen(a.report.at)) + '</p>' +
@@ -4348,9 +4373,14 @@ function renderAssetDetail() {
   }
   html += '<dl class="asset-fields">' + fields.join('') + '</dl>';
   if (a.notes) html += '<p class="asset-notes"><strong>Notes</strong><br>' + escapeHtml(a.notes).replace(/\n/g, '<br>') + '</p>';
+  const can = assetOpen.canHandle && held;
   html += '<div class="asset-actions">' +
     (d.canEdit ? '<button type="button" class="btn-primary" id="assetEditBtn">Edit</button>' : '') +
-    (!a.report && !d.canEdit ? '<button type="button" class="btn-secondary" id="assetReportBtn">Report a problem</button>' : '') + '</div>';
+    (can && !a.transfer ? '<button type="button" class="btn-secondary" id="assetTransferBtn">Transfer</button>' : '') +
+    (can ? '<button type="button" class="btn-secondary" id="assetAssignBtn">' + (a.assignedTo ? 'Reassign' : 'Assign') + '</button>' : '') +
+    (can && a.assignedTo ? '<button type="button" class="btn-secondary" id="assetReturnBtn">Return</button>' : '') +
+    (d.canEdit && held ? '<button type="button" class="btn-secondary" id="assetMaintBtn">Log maintenance</button>' : '') +
+    (!a.report && !d.canEdit && held ? '<button type="button" class="btn-secondary" id="assetReportBtn">Report a problem</button>' : '') + '</div>';
 
   html += '<h3 class="asset-sub">Files</h3>';
   html += assetOpen.files.length ? '<ul class="asset-files">' + assetOpen.files.map((f) =>
@@ -4362,6 +4392,8 @@ function renderAssetDetail() {
       '<input type="file" id="adFile" accept="image/*,application/pdf"><button type="button" class="btn-secondary" id="adFileUpload" disabled>Upload</button></div>' +
       '<p class="error-text" id="adFileError"></p>';
   }
+  html += '<h3 class="asset-sub">Maintenance &amp; repairs</h3>' + (assetOpen.maintenance && assetOpen.maintenance.length
+    ? assetOpen.maintenance.map((m) => assetMaintLine(m, false)).join('') : '<p class="muted">No maintenance recorded.</p>');
   html += '<h3 class="asset-sub">History</h3><ol class="asset-history">' + assetOpen.history.map((h) =>
     '<li><span class="asset-h-when">' + escapeHtml(assetWhen(h.at)) + '</span><span class="asset-h-what"><strong>' + escapeHtml(h.event) + '</strong>' +
     (h.details ? ' — ' + escapeHtml(h.details) : '') + '</span><span class="muted asset-h-who">' + escapeHtml(h.by) + '</span></li>').join('') + '</ol>';
@@ -4371,6 +4403,13 @@ function renderAssetDetail() {
   on('assetEditBtn', () => openAssetEdit(assetOpen.asset));
   on('assetReportBtn', () => openAssetReport('report'));
   on('assetCloseReportBtn', () => openAssetReport('close'));
+  on('assetTransferBtn', openAssetTransfer);
+  on('assetReceiveBtn', openAssetReceive);
+  on('assetCancelTrBtn', openAssetCancelTransfer);
+  on('assetAssignBtn', openAssetAssign);
+  on('assetReturnBtn', openAssetReturn);
+  on('assetMaintBtn', openAssetMaintenance);
+  document.querySelectorAll('#assetDetailBody [data-maint-rm]').forEach((b) => b.addEventListener('click', () => removeAssetMaint(b)));
   const fileIn = document.getElementById('adFile');
   if (fileIn) {
     let data = '';
@@ -4447,7 +4486,12 @@ function openAssetEdit(asset) {
   v('aeName', asset && asset.name); v('aeType', asset && asset.type); v('aeDepartment', asset && asset.department);
   v('aeDate', asset && asset.acquiredDate); v('aeValue', asset && asset.value); v('aeSupplier', asset && asset.supplier);
   v('aeSerial', asset && asset.serial); v('aeAssigned', asset && asset.assignedTo); v('aeWarranty', asset && asset.warrantyUntil);
-  v('aeNotes', asset && asset.notes); v('aeReason', ''); v('aeFile', '');
+  v('aeNotes', asset && asset.notes); v('aeReason', ''); v('aeFile', ''); v('aeNextService', asset && asset.nextServiceDue);
+  document.getElementById('aeAssignedWrap').hidden = !!asset; // after adding, use Assign / Return on the asset
+  document.getElementById('aePeopleList').innerHTML = (d.people || []).map((x) => '<option value="' + escapeAttr(x) + '">').join('');
+  const inTransit = !!(asset && asset.transfer);
+  document.getElementById('aeLocation').disabled = inTransit;
+  document.getElementById('aeStatus').disabled = inTransit;
   document.getElementById('aeFileWrap').hidden = !!asset; // on an existing asset, files are added in its window
   document.getElementById('assetEditError').textContent = '';
   document.getElementById('assetEditSave').disabled = false;
@@ -4486,7 +4530,7 @@ async function saveAssetEdit() {
     name: g('aeName').trim(), categoryId: g('aeCategory'), type: g('aeType').trim(), location: g('aeLocation'),
     department: g('aeDepartment').trim(), status: g('aeStatus'), condition: g('aeCondition'), acquired: g('aeAcquired'),
     acquiredDate: g('aeDate'), value: g('aeValue'), supplier: g('aeSupplier').trim(), serial: g('aeSerial').trim(),
-    assignedTo: g('aeAssigned').trim(), warrantyUntil: g('aeWarranty'), notes: g('aeNotes').trim()
+    assignedTo: g('aeAssigned').trim(), warrantyUntil: g('aeWarranty'), notes: g('aeNotes').trim(), nextServiceDue: g('aeNextService')
   };
   if (!asset.name) { err.textContent = 'Give the asset a name.'; return; }
   if (!asset.categoryId) { err.textContent = 'Choose a category.'; return; }
@@ -4571,6 +4615,258 @@ async function saveAssetReport() {
 }
 
 // ── Categories (Admins) ─────────────────────────────────────────────
+
+
+// ── Stage 2: one small form for transfer, receive, assign, maintenance ──
+let assetForm = null; // { fields, submit(values) -> Promise<res> }
+
+// fields: [{ id, label, type: text|textarea|select|date|number|file|radio, options:[{value,label}], value, hint, list, required, half }]
+function openAssetForm(spec) {
+  assetForm = spec;
+  document.getElementById('assetFormTitle').textContent = spec.title;
+  document.getElementById('assetFormSubtitle').textContent = spec.subtitle || '';
+  const wrap = document.getElementById('assetFormFields');
+  wrap.innerHTML = spec.intro ? '<p class="muted asset-form-intro">' + escapeHtml(spec.intro) + '</p>' : '';
+  let grid = null;
+  spec.fields.forEach((f) => {
+    const id = 'af_' + f.id;
+    let input;
+    if (f.type === 'select') {
+      input = '<select id="' + id + '">' + f.options.map((o) => '<option value="' + escapeAttr(o.value) + '">' + escapeHtml(o.label) + '</option>').join('') + '</select>';
+    } else if (f.type === 'textarea') {
+      input = '<textarea id="' + id + '" rows="3" maxlength="' + (f.max || 300) + '"></textarea>';
+    } else if (f.type === 'radio') {
+      input = '<div class="asset-radios">' + f.options.map((o, i) => '<label class="fin-check"><input type="radio" name="' + id + '" value="' + escapeAttr(o.value) + '"' +
+        (i === 0 ? ' checked' : '') + '> ' + escapeHtml(o.label) + '</label>').join('') + '</div>';
+    } else if (f.type === 'file') {
+      input = '<input type="file" id="' + id + '" accept="image/*,application/pdf">';
+    } else {
+      input = '<input type="' + (f.type === 'number' ? 'number' : f.type || 'text') + '" id="' + id + '"' +
+        (f.type === 'number' ? ' step="0.01" min="0" inputmode="decimal"' : ' maxlength="' + (f.max || 120) + '"') +
+        (f.list ? ' list="' + id + '_list"' : '') + (f.placeholder ? ' placeholder="' + escapeAttr(f.placeholder) + '"' : '') + '>' +
+        (f.list ? '<datalist id="' + id + '_list">' + f.list.map((x) => '<option value="' + escapeAttr(x) + '">').join('') + '</datalist>' : '');
+    }
+    const html = f.type === 'radio'
+      ? '<div class="asset-field" id="' + id + '_wrap"><span class="asset-field-label">' + escapeHtml(f.label) + '</span>' + input + '</div>'
+      : '<label id="' + id + '_wrap"><span id="' + id + '_label">' + escapeHtml(f.label) + '</span> ' + input + '</label>';
+    const holder = document.createElement('div');
+    holder.innerHTML = html;
+    if (f.half) {
+      if (!grid) { grid = document.createElement('div'); grid.className = 'grid-2'; wrap.appendChild(grid); }
+      while (holder.firstChild) grid.appendChild(holder.firstChild);
+    } else {
+      grid = null;
+      while (holder.firstChild) wrap.appendChild(holder.firstChild);
+    }
+    const el = document.getElementById(id);
+    if (el && f.value !== undefined && f.value !== null && f.type !== 'file') el.value = f.value;
+  });
+  spec.fields.filter((f) => f.type === 'file').forEach((f) => {
+    f.data = '';
+    const el = document.getElementById('af_' + f.id);
+    el.addEventListener('change', async () => {
+      f.data = ''; document.getElementById('assetFormError').textContent = '';
+      try { f.data = await readAssetFile(el.files[0], true); f.name = el.files[0] ? el.files[0].name.replace(/\.[^.]+$/, '') : ''; }
+      catch (ex) { document.getElementById('assetFormError').textContent = ex.message; el.value = ''; }
+    });
+  });
+  if (spec.onRender) spec.onRender();
+  document.getElementById('assetFormError').textContent = '';
+  document.getElementById('assetFormSave').textContent = spec.submitLabel || 'Save';
+  document.getElementById('assetFormSave').disabled = false;
+  document.getElementById('assetFormBackdrop').hidden = false;
+}
+
+function assetFormValues() {
+  const out = {};
+  assetForm.fields.forEach((f) => {
+    if (f.type === 'radio') { const c = document.querySelector('input[name="af_' + f.id + '"]:checked'); out[f.id] = c ? c.value : ''; }
+    else if (f.type === 'file') out[f.id] = f.data ? { name: f.name, data: f.data } : null;
+    else out[f.id] = document.getElementById('af_' + f.id).value.trim();
+  });
+  return out;
+}
+
+async function submitAssetForm() {
+  const err = document.getElementById('assetFormError');
+  const btn = document.getElementById('assetFormSave');
+  err.textContent = '';
+  const vals = assetFormValues();
+  const missing = assetForm.fields.filter((f) => (typeof f.required === 'function' ? f.required(vals) : f.required) && !vals[f.id])[0];
+  if (missing) { err.textContent = missing.requiredText || 'Fill in ' + missing.label.toLowerCase() + '.'; return; }
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  const res = await assetForm.submit(vals);
+  btn.disabled = false; btn.textContent = label;
+  if (!res.success) { err.textContent = res.error || 'Could not save.'; return; }
+  document.getElementById('assetFormBackdrop').hidden = true;
+  const id = assetOpen && assetOpen.asset.id;
+  await loadAssetsPage();
+  if (res.warning) alertAssetNotice(res.warning);
+  if (id && !document.getElementById('assetDetailBackdrop').hidden) openAssetDetail(id);
+}
+
+const assetSub = () => assetOpen.asset.id + ' · ' + assetOpen.asset.name;
+const assetPost = (action, extra) => apiPost(action, Object.assign({ requesterEmail: currentUser.email, id: assetOpen.asset.id }, extra));
+
+function openAssetTransfer() {
+  const a = assetOpen.asset;
+  const dests = assetData.allLocations.filter((l) => l !== a.location);
+  openAssetForm({
+    title: 'Transfer', subtitle: assetSub(), submitLabel: 'Send',
+    intro: 'From ' + a.location + '. It shows as "Transferred" until the receiving location confirms it arrived, and they get an email.',
+    fields: [
+      { id: 'to', label: 'Sending it to', type: 'select', options: [{ value: '', label: 'Choose…' }].concat(dests.map((l) => ({ value: l, label: l }))),
+        required: true, requiredText: 'Choose where it is going.' },
+      { id: 'takenBy', label: 'Taken by (optional)', placeholder: 'e.g. the driver', list: assetData.people },
+      { id: 'reason', label: 'Reason (optional)', type: 'textarea' }
+    ],
+    submit: (v) => assetPost('assetTransfer', { to: v.to, takenBy: v.takenBy, reason: v.reason })
+  });
+}
+
+function openAssetReceive() {
+  const t = assetOpen.asset.transfer;
+  openAssetForm({
+    title: 'Confirm it arrived', subtitle: assetSub(), submitLabel: 'Confirm',
+    intro: t.from + ' → ' + t.to + ', sent ' + assetWhen(t.startedAt) + ' by ' + t.startedBy + '.',
+    fields: [
+      { id: 'outcome', label: 'How did it arrive?', type: 'radio', options: [{ value: 'ok', label: 'In good order' }, { value: 'damaged', label: 'Damaged' }] },
+      { id: 'note', label: 'Note (optional)', type: 'textarea', required: (v) => v.outcome === 'damaged', requiredText: 'Describe the damage.' }
+    ],
+    onRender: () => document.querySelectorAll('input[name="af_outcome"]').forEach((r) => r.addEventListener('change', () => {
+      const dmg = document.querySelector('input[name="af_outcome"]:checked').value === 'damaged';
+      document.getElementById('af_note_label').textContent = dmg ? 'What is damaged?' : 'Note (optional)';
+    })),
+    submit: (v) => assetPost('assetTransferFinish', { outcome: v.outcome, note: v.note })
+  });
+}
+
+function openAssetCancelTransfer() {
+  const t = assetOpen.asset.transfer;
+  openAssetForm({
+    title: 'Cancel transfer', subtitle: assetSub(), submitLabel: 'Cancel transfer',
+    intro: 'It stays at ' + t.from + ' and goes back to its previous status.',
+    fields: [{ id: 'note', label: 'Why? (optional)', type: 'textarea' }],
+    submit: (v) => assetPost('assetTransferFinish', { op: 'cancel', note: v.note })
+  });
+}
+
+function openAssetAssign() {
+  const a = assetOpen.asset;
+  openAssetForm({
+    title: a.assignedTo ? 'Reassign' : 'Assign to a person', subtitle: assetSub(), submitLabel: 'Assign',
+    intro: a.assignedTo ? 'Currently with ' + a.assignedTo + '.' : (a.status === 'Available' ? 'Its status will change to In Use.' : ''),
+    fields: [
+      { id: 'person', label: 'Person', list: assetData.people, placeholder: 'Name, or a role like "Till 2"', required: true, requiredText: 'Who is it assigned to?' },
+      { id: 'since', label: 'From', type: 'date', value: assetData.today },
+      { id: 'note', label: 'Note (optional)', type: 'textarea' }
+    ],
+    submit: (v) => assetPost('assetAssign', { person: v.person, since: v.since, note: v.note })
+  });
+}
+
+function openAssetReturn() {
+  const a = assetOpen.asset;
+  openAssetForm({
+    title: 'Return', subtitle: assetSub(), submitLabel: 'Return',
+    intro: 'Back from ' + a.assignedTo + '.' + (a.status === 'In Use' ? ' Its status will change to Available.' : ''),
+    fields: [{ id: 'note', label: 'Note (optional)', type: 'textarea' }],
+    submit: (v) => assetPost('assetAssign', { op: 'return', note: v.note })
+  });
+}
+
+function openAssetMaintenance() {
+  const a = assetOpen.asset;
+  const requestId = 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const statuses = assetData.statuses.filter((s) => assetData.gone.indexOf(s.key) === -1 && s.key !== 'Transferred');
+  openAssetForm({
+    title: 'Log maintenance', subtitle: assetSub(), submitLabel: 'Save',
+    fields: [
+      { id: 'type', label: 'Type of work', type: 'select', half: true, options: assetData.maintenanceTypes.map((t) => ({ value: t, label: t })) },
+      { id: 'date', label: 'Date done', type: 'date', half: true, value: assetData.today, required: true, requiredText: 'When was the work done?' },
+      { id: 'description', label: 'What was done', type: 'textarea', max: 500, required: true, requiredText: 'Describe the work that was done.' },
+      { id: 'provider', label: 'Done by (optional)', half: true, placeholder: 'Company or person' },
+      { id: 'cost', label: 'Cost (R, optional)', type: 'number', half: true },
+      { id: 'nextDue', label: 'Next service due (optional)', type: 'date', half: true, value: a.nextServiceDue },
+      { id: 'status', label: 'Status after this', type: 'select', half: true, options: statuses.map((s) => ({ value: s.key, label: s.key })),
+        value: a.status === 'Under Maintenance' || a.status === 'Damaged' ? 'In Use' : a.status },
+      { id: 'file', label: 'Job card or invoice (photo or PDF, optional)', type: 'file' }
+    ],
+    onRender: () => {
+      if (a.transfer) { const st = document.getElementById('af_status'); st.innerHTML = '<option>' + escapeHtml(a.status) + '</option>'; st.disabled = true; }
+    },
+    submit: (v) => assetPost('assetMaintenance', { requestId: requestId, type: v.type, date: v.date, description: v.description, provider: v.provider,
+      cost: v.cost, nextDue: v.nextDue, status: a.transfer ? '' : v.status, file: v.file })
+  });
+}
+
+async function removeAssetMaint(b) {
+  if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Tap again to remove'; return; }
+  b.disabled = true;
+  const res = await apiPost('assetMaintenance', { requesterEmail: currentUser.email, op: 'remove', recordId: b.dataset.maintRm });
+  if (!res.success) { b.disabled = false; b.textContent = res.error || 'Could not remove'; return; }
+  const id = assetOpen && assetOpen.asset.id;
+  await loadAssetsPage();
+  if (id) openAssetDetail(id);
+}
+
+function assetMaintLine(m, withAsset) {
+  const a = withAsset ? assetData.assets.filter((x) => x.id === m.assetId)[0] : null;
+  return '<div class="fin-line asset-maint-line">' +
+    '<span class="fin-line-main"><span class="fin-line-desc">' +
+      (withAsset ? '<button type="button" class="link-btn asset-link" data-asset="' + escapeAttr(m.assetId) + '">' +
+        escapeHtml(m.assetId + (a ? ' · ' + a.name : '')) + '</button> — ' : '') + escapeHtml(m.type) + ': ' + escapeHtml(m.description) + '</span>' +
+    '<span class="fin-line-meta">' + escapeHtml(assetWhen(m.date)) + (m.provider ? ' · ' + escapeHtml(m.provider) : '') +
+      (m.nextDue ? ' · next due ' + escapeHtml(assetWhen(m.nextDue)) : '') + '</span>' +
+      (m.file ? '<span>' + fileButton(m.file, 'Job card / invoice') + '</span>' : '') + '</span>' +
+    '<span class="fin-line-side">' + (m.cost !== null ? '<span class="fin-line-amt">' + rand(m.cost) + '</span>' : '') +
+      (!withAsset && assetData.canEdit ? '<button type="button" class="link-btn asset-file-rm" data-maint-rm="' + escapeAttr(m.id) + '">Remove</button>' : '') + '</span>' +
+  '</div>';
+}
+
+function renderAssetTransfers() {
+  const d = assetData;
+  const name = (id) => { const a = d.assets.filter((x) => x.id === id)[0]; return a ? a.name : ''; };
+  const line = (t, open) => '<div class="fin-line">' +
+    '<span class="fin-line-main"><span class="fin-line-desc"><button type="button" class="link-btn asset-link" data-asset="' + escapeAttr(t.assetId) + '">' +
+      escapeHtml(t.assetId + (name(t.assetId) ? ' · ' + name(t.assetId) : '')) + '</button></span>' +
+    '<span class="fin-line-meta"><strong>' + escapeHtml(t.from) + ' → ' + escapeHtml(t.to) + '</strong> · ' + escapeHtml(t.id) + ' · sent ' +
+      escapeHtml(assetWhen(t.startedAt)) + ' by ' + escapeHtml(t.startedBy) + (t.takenBy ? ' · taken by ' + escapeHtml(t.takenBy) : '') + '</span>' +
+    (!open ? '<span class="fin-line-meta">' + escapeHtml(t.outcome || t.status) + ' · ' + escapeHtml(assetWhen(t.closedAt)) + ' · ' + escapeHtml(t.closedBy) +
+      (t.closeNote ? ' — ' + escapeHtml(t.closeNote) : '') + '</span>' : '') + '</span>' +
+    '<span class="fin-line-side">' + (open
+      ? (t.to === d.branch ? '<button type="button" class="btn-primary asset-tr-btn" data-asset="' + escapeAttr(t.assetId) + '">Confirm arrival</button>'
+        : '<span class="status-tag as-info">On the way</span>')
+      : '<span class="status-tag ' + (t.status === 'Received' ? (t.outcome === 'Arrived damaged' ? 'as-bad' : 'as-ok') : 'as-gone') + '">' + escapeHtml(t.status) + '</span>') +
+    '</span></div>';
+  const open = d.transfers.filter((t) => t.status === 'In transit');
+  const done = d.transfers.filter((t) => t.status !== 'In transit');
+  document.getElementById('assetTrOpen').innerHTML = open.length ? open.map((t) => line(t, true)).join('') : '<p class="muted">Nothing is on the way.</p>';
+  document.getElementById('assetTrDone').innerHTML = done.length ? done.map((t) => line(t, false)).join('') : '<p class="muted">None.</p>';
+}
+
+function renderAssetMaintenance() {
+  const d = assetData;
+  const month = d.today.slice(0, 7), year = d.today.slice(0, 4);
+  const sum = (list) => list.reduce((t, m) => t + (m.cost || 0), 0);
+  document.getElementById('assetMtMonth').textContent = rand(sum(d.maintenance.filter((m) => m.date.slice(0, 7) === month)));
+  document.getElementById('assetMtYear').textContent = rand(sum(d.maintenance.filter((m) => m.date.slice(0, 4) === year)));
+  const due = d.assets.filter((a) => assetHeld(a) && a.nextServiceDue && assetDaysUntil(a.nextServiceDue) <= 30)
+    .sort((x, y) => (x.nextServiceDue < y.nextServiceDue ? -1 : 1));
+  document.getElementById('assetMtDue').textContent = due.length;
+  document.getElementById('assetMtDueCard').classList.toggle('is-warn', due.length > 0);
+  document.getElementById('assetMtDueList').innerHTML = due.length ? due.map((a) => {
+    const n = assetDaysUntil(a.nextServiceDue);
+    return '<button type="button" class="fin-line asset-attn-row" data-asset="' + escapeAttr(a.id) + '">' +
+      '<span class="fin-line-main"><span class="fin-line-desc">' + escapeHtml(a.id) + ' · ' + escapeHtml(a.name) + '</span>' +
+      '<span class="fin-line-meta">' + escapeHtml(a.location) + ' · ' + escapeHtml(a.category) + '</span></span>' +
+      '<span class="asset-attn-why"><span class="asset-why asset-why-' + (n < 0 ? 'bad' : 'warn') + '">' +
+      escapeHtml(n < 0 ? 'Overdue since ' + assetWhen(a.nextServiceDue) : n === 0 ? 'Due today' : 'Due ' + assetWhen(a.nextServiceDue)) + '</span></span></button>';
+  }).join('') : '<p class="muted">No services due in the next 30 days.</p>';
+  document.getElementById('assetMtList').innerHTML = d.maintenance.length ? d.maintenance.map((m) => assetMaintLine(m, true)).join('')
+    : '<p class="muted">No maintenance recorded yet.</p>';
+}
 
 function openAssetCategory(cat) {
   assetCatEditing = cat || null;
@@ -4662,7 +4958,10 @@ async function saveAssetCategory() {
   el('assetCatClose').addEventListener('click', () => { el('assetCatBackdrop').hidden = true; });
   el('assetCatCancel').addEventListener('click', () => { el('assetCatBackdrop').hidden = true; });
   el('assetCatSave').addEventListener('click', saveAssetCategory);
-  ['assetDetailBackdrop', 'assetEditBackdrop', 'assetReportBackdrop', 'assetCatBackdrop'].forEach((id) => {
+  el('assetFormClose').addEventListener('click', () => { el('assetFormBackdrop').hidden = true; });
+  el('assetFormCancel').addEventListener('click', () => { el('assetFormBackdrop').hidden = true; });
+  el('assetFormSave').addEventListener('click', submitAssetForm);
+  ['assetDetailBackdrop', 'assetEditBackdrop', 'assetReportBackdrop', 'assetCatBackdrop', 'assetFormBackdrop'].forEach((id) => {
     if (id === 'assetDetailBackdrop') el(id).addEventListener('click', (e) => { if (e.target.id === id) closeAssetDetail(); });
     else guardModalBackdrop(id);
   });

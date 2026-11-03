@@ -1018,3 +1018,19 @@ textarea { min-height: 60px; resize: vertical; }
 .asset-cat-used { font-size: 12.5px; margin-left: 4px; }
 #assetCatAdd { flex: 0 0 auto; width: auto; padding: 8px 16px; }
 #view-assets [hidden] { display: none !important; }
+/* Assets — stage 2 */
+.asset-why-info { background: #e4eefb; color: var(--primary); }
+.asset-transit-banner { background: #eef4fc; border: 1px solid #c9dcf5; border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
+.asset-transit-banner p { margin: 4px 0; font-size: 14px; }
+.asset-transit-banner .asset-actions { margin-bottom: 0; }
+.asset-actions button { padding-top: 9px; padding-bottom: 9px; font-size: 14px; }
+.asset-link { font-weight: 700; color: var(--primary); text-decoration: none; padding: 0; font-size: inherit; text-align: left; }
+.asset-tr-btn { flex: 0 0 auto; width: auto; padding: 8px 14px; font-size: 13.5px; }
+.asset-form-intro { font-size: 13.5px; margin: 0 0 12px; }
+.asset-field { margin-bottom: 14px; }
+.asset-field-label { display: block; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+.asset-radios { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.asset-radios .fin-check { font-weight: 600; }
+.asset-maint-line .fin-line-main > span:last-child .file-link { font-size: 13px; }
+#assetTabs .nav-badge { margin-left: 4px; }
+#assetTabs { flex-wrap: wrap; }

@@ -470,6 +470,8 @@
       <div class="sub-switch fin-tabs" id="assetTabs">
         <button type="button" class="active" data-as="overview">Overview</button>
         <button type="button" data-as="register">Register</button>
+        <button type="button" data-as="transfers">Transfers <span class="nav-badge" id="assetTrBadge" hidden></span></button>
+        <button type="button" data-as="maintenance" id="assetMtTabBtn" hidden>Maintenance</button>
         <button type="button" data-as="categories" id="assetCatTabBtn" hidden>Categories</button>
       </div>
       <p class="error-text" id="assetError" hidden></p>
@@ -510,6 +512,27 @@
           </table>
         </div>
         <p class="muted" id="assetEmpty" hidden>No assets match.</p>
+      </div>
+
+      <div id="as-transfers" class="fin-panel" hidden>
+        <p class="muted">To move an asset, open it and tap <strong>Transfer</strong>. It shows as "Transferred" until the receiving location confirms it arrived; then it moves there.</p>
+        <h2>On the way</h2>
+        <div id="assetTrOpen" class="fin-lines"></div>
+        <h2>Finished in the last 60 days</h2>
+        <div id="assetTrDone" class="fin-lines"></div>
+      </div>
+
+      <div id="as-maintenance" class="fin-panel" hidden>
+        <div class="fin-kpis">
+          <div class="kpi-card"><span class="kpi-label">Cost this month</span><span class="kpi-value" id="assetMtMonth">R 0.00</span></div>
+          <div class="kpi-card"><span class="kpi-label">Cost this year</span><span class="kpi-value" id="assetMtYear">R 0.00</span></div>
+          <div class="kpi-card" id="assetMtDueCard"><span class="kpi-label">Services due (30 days)</span><span class="kpi-value" id="assetMtDue">0</span></div>
+        </div>
+        <h2>Services due</h2>
+        <div id="assetMtDueList" class="fin-lines"></div>
+        <h2>Maintenance &amp; repair records</h2>
+        <p class="muted">To add one, open the asset and tap <strong>Log maintenance</strong>.</p>
+        <div id="assetMtList" class="fin-lines"></div>
       </div>
 
       <div id="as-categories" class="fin-panel" hidden>
@@ -1074,8 +1097,9 @@
         <label><span id="aeValueLabel">Purchase value (R)</span> (optional) <input type="number" step="0.01" min="0" inputmode="decimal" id="aeValue"></label>
         <label><span id="aeSupplierLabel">Supplier</span> (optional) <input type="text" id="aeSupplier" maxlength="120"></label>
         <label>Serial number (optional) <input type="text" id="aeSerial" maxlength="80"></label>
-        <label>Assigned to (optional) <input type="text" id="aeAssigned" maxlength="120" placeholder="Person or role"></label>
+        <label id="aeAssignedWrap">Assigned to (optional) <input type="text" id="aeAssigned" maxlength="120" placeholder="Person or role" list="aePeopleList"></label>
         <label>Warranty until (optional) <input type="date" id="aeWarranty"></label>
+        <label>Next service due (optional) <input type="date" id="aeNextService"></label>
       </div>
       <label>Notes (optional) <textarea id="aeNotes" maxlength="1000" rows="2"></textarea></label>
       <div id="aeFileWrap" class="grid-2">
@@ -1084,6 +1108,7 @@
       </div>
       <datalist id="aeTypeList"></datalist>
       <datalist id="aeDeptList"></datalist>
+      <datalist id="aePeopleList"></datalist>
       <p class="error-text" id="assetEditError"></p>
       <div class="user-edit-actions">
         <button type="button" class="btn-secondary" id="assetEditCancel">Cancel</button>
@@ -1113,6 +1138,27 @@
       <div class="user-edit-actions">
         <button type="button" class="btn-secondary" id="assetReportCancel">Cancel</button>
         <button type="button" class="btn-primary" id="assetReportSave">Send report</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── ASSETS: ACTION FORM (transfer, receive, assign, maintenance) ─── -->
+<div id="assetFormBackdrop" class="modal-backdrop asset-modal" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="assetFormTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="assetFormTitle" style="margin:0;"></h2>
+        <p class="muted" id="assetFormSubtitle" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="assetFormClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="assetFormFields"></div>
+      <p class="error-text" id="assetFormError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="assetFormCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="assetFormSave">Save</button>
       </div>
     </div>
   </div>
