@@ -1686,7 +1686,6 @@ function renderUsersTable() {
     return '<tr>' +
       '<td class="nowrap">' + dateCell(u.timestamp) + '</td>' +
       '<td class="col-name">' + escapeHtml(u.fullName) + '</td>' +
-      '<td class="nowrap">' + escapeHtml(formatContact(u.contact)) + '</td>' +
       '<td>' + escapeHtml(u.email) + '</td>' +
       '<td>' + escapeHtml(u.requestedBranch || '—') + '</td>' +
       '<td>' + statusTag(u.status) + '</td>' +
@@ -1695,7 +1694,6 @@ function renderUsersTable() {
           ? '<span class="perm-tags">' + ((u.hiddenFinance || []).length ? '<span class="perm-tag">' + u.hiddenFinance.length + ' hidden</span>' : '') +
             (u.manageDeliveries ? '<span class="perm-tag">Deliveries</span>' : '') + '</span>' : '') + '</td>' +
       '<td>' + escapeHtml(u.branch || '—') + '</td>' +
-      '<td>' + escapeHtml(u.approvedBy || '—') + '</td>' +
       '<td class="nowrap">' + dateCell(u.approvedDate) + '</td>' +
       '<td class="users-action">' + action + '</td>' +
     '</tr>';
@@ -1724,7 +1722,15 @@ function openUserEdit(user) {
   const isSelf = sameEmail(user.email, usersAdminEmail);
 
   document.getElementById('userEditTitle').textContent = 'Edit ' + (user.fullName || 'user');
-  document.getElementById('userEditSubtitle').textContent = user.email;
+  // Contact and Approved by aren't columns in the table (to keep it narrow),
+  // so they show here.
+  const contact = formatContact(user.contact);
+  const tel = String(contact || '').replace(/[^\d+]/g, '');
+  document.getElementById('userEditSubtitle').innerHTML = escapeHtml(user.email) +
+    (contact ? ' · <a href="tel:' + escapeAttr(tel) + '" style="color:inherit">' + escapeHtml(contact) + '</a>' : '');
+  document.getElementById('userEditInfo').textContent = user.approvedBy
+    ? 'Approved by ' + user.approvedBy + (user.approvedDate ? ' on ' + formatShortDateTime(user.approvedDate) : '') : '';
+  document.getElementById('userEditInfo').hidden = !user.approvedBy;
 
   const statusSel = document.getElementById('userEditStatus');
   statusSel.value = ['Approved', 'Inactive', 'Rejected'].indexOf(user.status) !== -1 ? user.status : 'Approved';
@@ -1751,7 +1757,6 @@ function openUserEdit(user) {
   if (current) branchSel.value = current;
 
   const meta = [];
-  if (user.approvedBy) meta.push('Approved by ' + user.approvedBy + (user.approvedDate ? ' on ' + formatShortDateTime(user.approvedDate) : ''));
   if (user.lastEditedBy) meta.push('Last edited by ' + user.lastEditedBy + (user.lastEditedDate ? ' on ' + formatShortDateTime(user.lastEditedDate) : ''));
   document.getElementById('userEditMeta').textContent = meta.join(' · ');
 
