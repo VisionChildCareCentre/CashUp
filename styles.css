@@ -1219,3 +1219,24 @@ span.pos-diff { font-size: 13px; margin: 0; }
 @media (max-width: 640px) { .till-cu-grid { grid-template-columns: repeat(2, 1fr); } }
 .till-cu-note { font-size: 12.5px; margin-top: 8px; }
 input.from-till { background: #eef7f1; border-color: #9fd3b2; }
+/* Till — phase 3 reports */
+.pos-rep-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+@media (max-width: 760px) { .pos-rep-kpis { grid-template-columns: repeat(2, 1fr); } }
+.pos-rep-kpis .kpi-value { font-size: 20px; }
+.pos-kpi-sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.pos-mix { font-size: 14px; }
+.pos-delta { font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.pos-delta.up { color: #17703a; }
+.pos-delta.down { color: #a8322a; }
+.pos-rep-sec { margin-top: 14px; }
+.pos-rep-sec h3 { margin: 0 0 4px; }
+.pos-rep-note { font-size: 12.5px; margin: 0 0 10px; }
+.pos-rep-filters { align-items: flex-end; }
+.pos-rep-btns { margin-left: auto; }
+.pos-flag { background: #fde6e4; color: #a8322a; padding: 1px 6px; border-radius: 4px; font-weight: 800; }
+.pos-rep-table .n, .pos-rep-table th.n { text-align: right; }
+.dash-till-card .chart-card-head { display: flex; justify-content: space-between; align-items: center; }
+#view-till .dash-two-col { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 900px) { #view-till .dash-two-col { grid-template-columns: 1fr 1fr; } }
+#view-till .chart-wrap { position: relative; height: 280px; }
+#view-till .chart-wrap-short { height: 230px; }

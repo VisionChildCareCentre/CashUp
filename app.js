@@ -1222,6 +1222,7 @@ async function loadAdminDashboard() {
   renderComparisonChart(result.kpis);
   renderMonthlyHistoryChart(result);
   renderBranchOverTimeChart(result);
+  if (typeof loadDashTill === 'function') loadDashTill();
 }
 
 function formatDateOnly(isoDate) {
@@ -5774,6 +5775,8 @@ function renderTill() {
   document.getElementById('posSync').hidden = !d.canSell;
   document.getElementById('posSellTabBtn').hidden = !d.canSell;
   document.getElementById('posCashTabBtn').hidden = !d.canCashiers;
+  document.getElementById('posRepTabBtn').hidden = !d.seesAll;
+  if (posTab === 'reports' && !d.seesAll) posTab = 'sell';
   document.getElementById('posSetTabBtn').hidden = !d.canSell && !d.canManage;
   if (!d.canSell && (posTab === 'sell' || posTab === 'cashiers')) posTab = 'sheet';
   renderPosCashier();
@@ -5784,8 +5787,9 @@ function renderTill() {
 function showPosTab(tab) {
   posTab = tab;
   document.querySelectorAll('#posTabs button').forEach((b) => b.classList.toggle('active', b.dataset.pt === tab));
-  ['sell', 'sheet', 'cashiers', 'settings'].forEach((t) => { document.getElementById('pt-' + t).hidden = t !== tab; });
-  if (tab === 'sell') renderPosSell();
+  ['sell', 'sheet', 'reports', 'cashiers', 'settings'].forEach((t) => { document.getElementById('pt-' + t).hidden = t !== tab; });
+  if (tab === 'reports') loadPosReports();
+  else if (tab === 'sell') renderPosSell();
   else if (tab === 'sheet') loadPosSheet();
   else if (tab === 'cashiers') loadPosCashiers();
   else renderPosSettings();
@@ -6518,6 +6522,208 @@ async function posDialogConfirm() {
   ['posLineBackdrop', 'posPinBackdrop', 'posDialogBackdrop', 'posReceiptBackdrop'].forEach((id) => guardModalBackdrop(id));
   el('mDate').addEventListener('change', loadTillCashup);
   el('mBranch').addEventListener('change', loadTillCashup);
+})();
+
+
+// ── Phase 3: Head Office till reports ──────────────────────────────
+
+let posReport = null;
+let posRepCharts = {};
+let posRepSeq = 0;
+
+function posPct(cur, prev) {
+  if (!prev) return cur ? '<span class="pos-delta up">new</span>' : '';
+  const p = Math.round((cur - prev) / Math.abs(prev) * 1000) / 10;
+  return '<span class="pos-delta ' + (p > 0 ? 'up' : p < 0 ? 'down' : '') + '">' + (p > 0 ? '▲ ' : p < 0 ? '▼ ' : '') + Math.abs(p) + '% vs previous</span>';
+}
+function posOverShort(v) {
+  if (v === null || v === undefined) return '—';
+  if (Math.abs(v) < 0.005) return '<span class="pos-diff ok">balances</span>';
+  return '<span class="pos-diff ' + (v > 0 ? 'over' : 'short') + '">' + (v > 0 ? 'over ' : 'short ') + rand(Math.abs(v)) + '</span>';
+}
+
+async function fetchPosReport(period, branch, from, to) {
+  return apiGet('posReport', { email: currentUser.email, period: period, branch: branch, from: from || '', to: to || '' });
+}
+
+// ── Dashboard card ─────────────────────────────────────────────────
+async function loadDashTill() {
+  const card = document.getElementById('dashTillCard');
+  card.hidden = !featureOn('pos');
+  if (card.hidden) return;
+  const seq = ++posRepSeq;
+  const body = document.getElementById('dashTillBody');
+  body.innerHTML = '<p class="muted">Loading till sales…</p>';
+  const res = await fetchPosReport(document.getElementById('dashPeriod').value, document.getElementById('dashBranch').value,
+    document.getElementById('dashFrom').value, document.getElementById('dashTo').value);
+  if (seq !== posRepSeq) return;
+  if (!res.success) { body.innerHTML = '<p class="muted">' + escapeHtml(res.error === 'Unknown action' ? 'Till reports need the updated Apps Script.' : (res.error || 'Could not load till sales.')) + '</p>'; return; }
+  const k = res.kpis;
+  if (!k.count && !k.refunds && !k.cancelled) { body.innerHTML = '<p class="muted">No till sales in this period.</p>'; return; }
+  body.innerHTML = posKpiHtml(res) +
+    '<table class="donations-table pos-rep-table"><thead><tr><th>Branch</th><th class="n">Sales</th><th class="n">Net till sales</th><th class="n">Avg sale</th><th class="n">Refunds</th><th class="n">Cancelled</th><th class="n">Till over / short</th></tr></thead><tbody>' +
+    res.byBranch.map((b) => '<tr><td>' + escapeHtml(b.branch) + '</td><td class="n">' + b.count + '</td><td class="n">' + rand(b.net) + '<br>' + posPct(b.net, b.prevNet) + '</td><td class="n">' + rand(b.avg) +
+      '</td><td class="n">' + (b.refunds ? b.refunds + ' · ' + rand(b.refundValue) : '—') + '</td><td class="n">' + (b.cancelled || '—') + '</td><td class="n">' + (b.tillsClosed ? posOverShort(b.tillDifference) : '—') + '</td></tr>').join('') +
+    '</tbody></table>';
+}
+
+function posKpiHtml(res) {
+  const k = res.kpis, p = res.prev;
+  const card = (label, value, extra) => '<div class="kpi-card"><span class="kpi-label">' + label + '</span><span class="kpi-value">' + value + '</span>' + (extra ? '<span class="pos-kpi-sub">' + extra + '</span>' : '') + '</div>';
+  return '<div class="pos-rep-kpis">' +
+    card('Net till sales', rand(k.net), posPct(k.net, p.net)) +
+    card('Sales', k.count, posPct(k.count, p.count)) +
+    card('Average sale', rand(k.avg), posPct(k.avg, p.avg)) +
+    card('Items sold', k.items, '') +
+    card('Refunds', rand(k.refundValue), k.refunds + ' refund' + (k.refunds === 1 ? '' : 's')) +
+    card('Cancelled sales', k.cancelled, k.cancelled ? rand(k.cancelledValue) : '') +
+    card('Till over / short', k.tillsClosed ? posOverShort(k.tillDifference) : '—', k.tillsClosed ? k.tillsOff + ' of ' + k.tillsClosed + ' closings off' : 'no tills closed') +
+    card('Cash · Card · EFT', '<span class="pos-mix">' + rand(k.cash) + ' · ' + rand(k.card) + (k.other ? ' · ' + rand(k.other) : '') + '</span>', '') +
+  '</div>';
+}
+
+// ── Reports tab ───────────────────────────────────────────────────
+async function loadPosReports() {
+  const bsel = document.getElementById('prBranch');
+  if (bsel.options.length === 1 && posCfg) posCfg.branches.forEach((b) => { const o = document.createElement('option'); o.value = b; o.textContent = b; bsel.appendChild(o); });
+  const period = document.getElementById('prPeriod').value;
+  document.getElementById('prFromWrap').hidden = period !== 'custom';
+  document.getElementById('prToWrap').hidden = period !== 'custom';
+  const seq = ++posRepSeq;
+  const body = document.getElementById('prBody');
+  body.innerHTML = '<p class="muted">Loading…</p>';
+  const res = await fetchPosReport(period, bsel.value, document.getElementById('prFrom').value, document.getElementById('prTo').value);
+  if (seq !== posRepSeq) return;
+  if (!res.success) { body.innerHTML = '<p class="error-text">' + escapeHtml(res.error || 'Could not load reports.') + '</p>'; return; }
+  posReport = res;
+  document.getElementById('prRange').textContent = assetWhen(res.range.from) + ' – ' + assetWhen(res.range.to) + (res.branch !== 'All Branches' ? ' · ' + res.branch : '') +
+    ' · compared with ' + assetWhen(res.range.prevFrom) + ' – ' + assetWhen(res.range.prevTo);
+  body.innerHTML = posReportHtml(res, false);
+  renderPosRepCharts(res);
+}
+
+function posReportHtml(res, forPrint) {
+  const e = escapeHtml;
+  const flag = (v, lim) => (v >= lim ? ' class="pos-flag"' : '');
+  const section = (title, note, html) => '<div class="card chart-card pos-rep-sec"><h3>' + title + '</h3>' + (note ? '<p class="muted pos-rep-note">' + note + '</p>' : '') + html + '</div>';
+  const wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const hours = Object.keys(res.byHour).map(Number).sort((a, b) => a - b);
+  let html = posKpiHtml(res);
+  if (!forPrint) {
+    html += section('Till sales over time', 'Net sales per branch (' + res.granularity + ').', '<div class="chart-wrap"><canvas id="prTrend"></canvas></div>');
+  }
+  html += section('By branch', 'Every branch, whatever the Branch filter, so they can be compared.',
+    '<div class="pos-sheet-wrap"><table class="pos-sheet"><thead><tr><th>Branch</th><th class="n">Sales</th><th class="n">Net</th><th class="n">vs previous</th><th class="n">Avg sale</th><th class="n">Items</th><th class="n">Cash</th><th class="n">Card</th><th class="n">EFT / other</th><th class="n">Refunds</th><th class="n">Cancelled</th><th class="n">Till over / short</th></tr></thead><tbody>' +
+    res.byBranch.map((b) => '<tr><td>' + e(b.branch) + '</td><td class="n">' + b.count + '</td><td class="n"><strong>' + rand(b.net) + '</strong></td><td class="n">' + posPct(b.net, b.prevNet) +
+      '</td><td class="n">' + rand(b.avg) + '</td><td class="n">' + b.items + '</td><td class="n">' + rand(b.cash) + '</td><td class="n">' + rand(b.card) + '</td><td class="n">' + rand(b.other) +
+      '</td><td class="n">' + (b.refunds ? b.refunds + ' · ' + rand(b.refundValue) : '—') + '</td><td class="n">' + (b.cancelled ? b.cancelled + ' · ' + rand(b.cancelledValue) : '—') +
+      '</td><td class="n">' + (b.tillsClosed ? posOverShort(b.tillDifference) : '—') + '</td></tr>').join('') + '</tbody></table></div>');
+  html += section('By category', 'What sells, net of refunds. Share is of net till sales.',
+    (forPrint ? '' : '<div class="chart-wrap chart-wrap-short"><canvas id="prCats"></canvas></div>') +
+    '<div class="pos-sheet-wrap"><table class="pos-sheet"><thead><tr><th>Category</th><th class="n">Qty</th><th class="n">Amount</th><th class="n">Share</th><th class="n">Avg price</th>' +
+    (res.branch === 'All Branches' ? res.byBranch.map((b) => '<th class="n">' + e(b.branch) + '</th>').join('') : '') + '</tr></thead><tbody>' +
+    res.byCategory.map((c) => '<tr><td>' + e(c.category) + '</td><td class="n">' + c.qty + '</td><td class="n"><strong>' + rand(c.amount) + '</strong></td><td class="n">' + c.share + '%</td><td class="n">' + rand(c.avgPrice) + '</td>' +
+      (res.branch === 'All Branches' ? res.byBranch.map((b) => '<td class="n">' + (c.byBranch[b.branch] ? rand(c.byBranch[b.branch]) : '—') + '</td>').join('') : '') + '</tr>').join('') +
+    '</tbody></table></div>');
+  html += section('By cashier', 'Refund and cancellation rates above 10% are highlighted — worth a conversation, not proof of anything. Till over / short is for tills they closed.',
+    '<div class="pos-sheet-wrap"><table class="pos-sheet"><thead><tr><th>Cashier</th><th>Branch</th><th class="n">Sales</th><th class="n">Net</th><th class="n">Avg sale</th><th class="n">Refunds</th><th class="n">Refund rate</th><th class="n">Cancelled</th><th class="n">Cancel rate</th><th class="n">Till over / short</th></tr></thead><tbody>' +
+    res.byCashier.map((x) => '<tr><td>' + e(x.cashier) + '</td><td>' + e(x.branch) + '</td><td class="n">' + x.count + '</td><td class="n"><strong>' + rand(x.net) + '</strong></td><td class="n">' + rand(x.avg) +
+      '</td><td class="n">' + (x.refunds ? x.refunds + ' · ' + rand(x.refundValue) : '—') + '</td><td class="n"><span' + flag(x.refundRate, 10) + '>' + x.refundRate + '%</span></td><td class="n">' +
+      (x.cancelled ? x.cancelled + ' · ' + rand(x.cancelledValue) : '—') + '</td><td class="n"><span' + flag(x.cancelRate, 10) + '>' + x.cancelRate + '%</span></td><td class="n">' +
+      (x.tillsClosed ? posOverShort(x.tillDifference) + ' <span class="muted">(' + x.tillsClosed + ')</span>' : '—') + '</td></tr>').join('') + '</tbody></table></div>');
+  html += '<div class="dash-two-col">' +
+    section('By day of the week', 'Sales (not refunds) by weekday.', forPrint
+      ? '<table class="pos-mini">' + wd.map((d, i) => '<tr><td>' + d + '</td><td class="n">' + res.byWeekdayCount[i] + ' sales</td><td class="n">' + rand(res.byWeekday[i]) + '</td></tr>').join('') + '</table>'
+      : '<div class="chart-wrap chart-wrap-short"><canvas id="prWeekday"></canvas></div>') +
+    section('By hour', 'When customers buy — useful for planning who is on the till.', forPrint
+      ? '<table class="pos-mini">' + hours.map((h) => '<tr><td>' + String(h).padStart(2, '0') + ':00</td><td class="n">' + res.byHour[h].count + ' sales</td><td class="n">' + rand(res.byHour[h].amount) + '</td></tr>').join('') + '</table>'
+      : '<div class="chart-wrap chart-wrap-short"><canvas id="prHour"></canvas></div>') + '</div>';
+  html += section('Till vs Daily Cash-Up', 'Days where the till sold but there is no cash-up, or the cash-up gross sales differ from the till.',
+    res.reconcile.length ? '<table class="pos-mini"><tr><th>Date</th><th>Branch</th><th class="n">Till</th><th class="n">Cash-up gross</th><th class="n">Difference</th></tr>' +
+      res.reconcile.map((x) => '<tr><td>' + e(assetWhen(x.date)) + '</td><td>' + e(x.branch) + '</td><td class="n">' + rand(x.till) + '</td><td class="n">' +
+        (x.cashupGross === null ? '<span class="pos-flag">no cash-up</span>' : rand(x.cashupGross)) + '</td><td class="n">' + (x.cashupGross === null ? '' : rand(x.cashupGross - x.till)) + '</td></tr>').join('') + '</table>'
+      : '<p class="muted">Every day with till sales has a matching cash-up.</p>');
+  return html;
+}
+
+function renderPosRepCharts(res) {
+  Object.keys(posRepCharts).forEach((k) => { posRepCharts[k].destroy(); });
+  posRepCharts = {};
+  if (typeof Chart === 'undefined') return;
+  const names = Object.keys(res.trend.branches);
+  const tEl = document.getElementById('prTrend');
+  if (tEl) posRepCharts.trend = new Chart(tEl, { type: 'line', data: { labels: res.trend.labels, datasets: names.map((b, i) => ({ label: b, data: res.trend.branches[b],
+    borderColor: (dashBranchOrder.length ? colorForBranch(b) : DASH_SERIES_COLORS[(res.branches.indexOf(b) + 8) % 8]), backgroundColor: (dashBranchOrder.length ? colorForBranch(b) : DASH_SERIES_COLORS[(res.branches.indexOf(b) + 8) % 8]), tension: .25, pointRadius: 2 })) },
+    options: baseChartOptions({ plugins: { legend: { display: names.length > 1, position: 'bottom' }, tooltip: { callbacks: { label: (c) => c.dataset.label + ': ' + rand(c.parsed.y) } } } }) });
+  const top = res.byCategory.slice(0, 12);
+  const cEl = document.getElementById('prCats');
+  if (cEl) posRepCharts.cats = new Chart(cEl, { type: 'bar', data: { labels: top.map((c) => c.category), datasets: [{ data: top.map((c) => c.amount), backgroundColor: DASH_SERIES_COLORS[0], borderRadius: 4 }] },
+    options: baseChartOptions({ indexAxis: 'y', plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => rand(c.parsed.x) } } },
+      scales: { x: { beginAtZero: true, grid: { color: '#dfe5ee' }, ticks: { color: '#5e6a7a' } }, y: { grid: { display: false }, ticks: { color: '#142132', autoSkip: false } } } }) });
+  const wEl = document.getElementById('prWeekday');
+  if (wEl) posRepCharts.wd = new Chart(wEl, { type: 'bar', data: { labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], datasets: [{ data: res.byWeekday, backgroundColor: DASH_SERIES_COLORS[2], borderRadius: 4 }] },
+    options: baseChartOptions({ plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => rand(c.parsed.y) + ' · ' + res.byWeekdayCount[c.dataIndex] + ' sales' } } } }) });
+  const hours = [];
+  for (let h = 7; h <= 19; h++) hours.push(h);
+  Object.keys(res.byHour).map(Number).forEach((h) => { if (hours.indexOf(h) === -1) hours.push(h); });
+  hours.sort((a, b) => a - b);
+  const hEl = document.getElementById('prHour');
+  if (hEl) posRepCharts.hr = new Chart(hEl, { type: 'bar', data: { labels: hours.map((h) => String(h).padStart(2, '0') + ':00'), datasets: [{ data: hours.map((h) => (res.byHour[h] ? res.byHour[h].count : 0)), backgroundColor: DASH_SERIES_COLORS[3], borderRadius: 4 }] },
+    options: baseChartOptions({ plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => c.parsed.y + ' sales · ' + rand((res.byHour[hours[c.dataIndex]] || { amount: 0 }).amount) } } } }) });
+}
+
+function printPosReport() {
+  if (!posReport) return;
+  const sub = document.getElementById('prRange').textContent;
+  openReportViewer('Till sales report', sub, assetPrintDoc('Till sales report', sub,
+    '<style>.n{text-align:right;white-space:nowrap}.pos-rep-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px}' +
+    '.kpi-card{border:1px solid #dfe5ee;border-radius:8px;padding:6px 8px}.kpi-label{display:block;font-size:9px;color:#5e6a7a;text-transform:uppercase;font-weight:bold}' +
+    '.kpi-value{font-size:15px;font-weight:bold}.pos-kpi-sub{display:block;font-size:9px;color:#5e6a7a}.pos-delta.up{color:#17703a}.pos-delta.down{color:#a8322a}' +
+    '.pos-rep-sec{margin-top:10px;page-break-inside:avoid}h3{font-size:11px;color:#0d53af;text-transform:uppercase;margin:8px 0 2px}.pos-rep-note{font-size:9.5px;color:#5e6a7a;margin:0 0 4px}' +
+    '.pos-flag{background:#fde6e4;color:#a8322a;padding:0 4px;border-radius:3px;font-weight:bold}.pos-diff.short{color:#a8322a}.pos-diff.over{color:#8a5a00}.pos-diff.ok{color:#17703a}' +
+    '.dash-two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}</style>' + posReportHtml(posReport, true)));
+}
+
+async function excelPosReport() {
+  const r = posReport;
+  if (!r) return;
+  await loadScriptOnce('vendor/xlsx.full.min.js');
+  const wb = XLSX.utils.book_new();
+  const add = (name, aoa, widths) => { const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = widths.map((w) => ({ wch: w })); XLSX.utils.book_append_sheet(wb, ws, name); };
+  const k = r.kpis, p = r.prev;
+  add('Summary', [['Till sales report', r.branch, r.range.from + ' to ' + r.range.to], [], ['', 'This period', 'Previous period'],
+    ['Net till sales', k.net, p.net], ['Sales', k.count, p.count], ['Average sale', k.avg, p.avg], ['Items', k.items, p.items], ['Refunds (value)', k.refundValue, p.refundValue],
+    ['Refunds (count)', k.refunds, p.refunds], ['Cancelled sales', k.cancelled, p.cancelled], ['Cash', k.cash, p.cash], ['Card', k.card, p.card], ['EFT / other', k.other, p.other],
+    ['Till over / short', k.tillDifference, ''], ['Tills closed', k.tillsClosed, '']], [22, 14, 16]);
+  add('By branch', [['Branch', 'Sales', 'Net', 'Previous net', 'Avg sale', 'Items', 'Cash', 'Card', 'EFT / other', 'Refunds', 'Refund value', 'Cancelled', 'Cancelled value', 'Till over / short']]
+    .concat(r.byBranch.map((b) => [b.branch, b.count, b.net, b.prevNet, b.avg, b.items, b.cash, b.card, b.other, b.refunds, b.refundValue, b.cancelled, b.cancelledValue, b.tillsClosed ? b.tillDifference : ''])),
+    [16, 8, 12, 12, 10, 8, 12, 12, 12, 8, 12, 9, 13, 14]);
+  add('By category', [['Category', 'Qty', 'Amount', 'Share %', 'Avg price'].concat(r.byBranch.map((b) => b.branch))]
+    .concat(r.byCategory.map((c) => [c.category, c.qty, c.amount, c.share, c.avgPrice].concat(r.byBranch.map((b) => c.byBranch[b.branch] || 0)))), [24, 8, 12, 9, 10].concat(r.byBranch.map(() => 12)));
+  add('By cashier', [['Cashier', 'Branch', 'Sales', 'Net', 'Avg sale', 'Refunds', 'Refund value', 'Refund rate %', 'Cancelled', 'Cancelled value', 'Cancel rate %', 'Tills closed', 'Till over / short']]
+    .concat(r.byCashier.map((x) => [x.cashier, x.branch, x.count, x.net, x.avg, x.refunds, x.refundValue, x.refundRate, x.cancelled, x.cancelledValue, x.cancelRate, x.tillsClosed, x.tillsClosed ? x.tillDifference : ''])),
+    [18, 14, 8, 12, 10, 8, 12, 12, 9, 13, 12, 10, 14]);
+  add('By day & hour', [['Weekday', 'Sales', 'Amount']].concat(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d, i) => [d, r.byWeekdayCount[i], r.byWeekday[i]]))
+    .concat([[], ['Hour', 'Sales', 'Amount']]).concat(Object.keys(r.byHour).map(Number).sort((a, b) => a - b).map((h) => [String(h).padStart(2, '0') + ':00', r.byHour[h].count, r.byHour[h].amount])), [10, 8, 12]);
+  add('Till vs cash-up', [['Date', 'Branch', 'Till', 'Cash-up gross', 'Difference']].concat(r.reconcile.map((x) => [x.date, x.branch, x.till, x.cashupGross === null ? 'no cash-up' : x.cashupGross,
+    x.cashupGross === null ? '' : Math.round((x.cashupGross - x.till) * 100) / 100])), [12, 16, 12, 14, 12]);
+  XLSX.writeFile(wb, 'Till_Report_' + r.branch.replace(/\W+/g, '_') + '_' + r.range.from + '_to_' + r.range.to + '.xlsx');
+}
+
+(function wirePosReports() {
+  const el = (id) => document.getElementById(id);
+  ['prPeriod', 'prBranch', 'prFrom', 'prTo'].forEach((id) => el(id).addEventListener('change', loadPosReports));
+  el('prPrint').addEventListener('click', printPosReport);
+  el('prExcel').addEventListener('click', excelPosReport);
+  el('dashTillMore').addEventListener('click', () => {
+    el('prPeriod').value = el('dashPeriod').value === 'thisWeek' ? 'thisWeek' : el('dashPeriod').value;
+    el('prFrom').value = el('dashFrom').value; el('prTo').value = el('dashTo').value;
+    if (el('prBranch').options.length === 1) Array.from(el('dashBranch').options).slice(1).forEach((o) => { const x = document.createElement('option'); x.value = o.value; x.textContent = o.textContent; el('prBranch').appendChild(x); });
+    el('prBranch').value = el('dashBranch').value;
+    if (!el('prBranch').value) el('prBranch').value = 'All Branches';
+    posTab = 'reports';
+    openPage('till');
+  });
 })();
 
 function escapeHtml(str) {
