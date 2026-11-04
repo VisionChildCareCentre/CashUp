@@ -601,6 +601,7 @@ function setupManagerView(user) {
   }
   document.getElementById('managerName').value = document.getElementById('managerName').value || '';
   recalcAll();
+  if (typeof loadTillCashup === 'function') loadTillCashup();
 }
 
 async function ensureDevBranchList() {
@@ -841,6 +842,7 @@ document.getElementById('newCashUpBtn').addEventListener('click', () => {
   document.getElementById('shortOverExplain').value = '';
   document.getElementById('donationsBody').innerHTML = '';
   document.getElementById('mDate').value = new Date().toISOString().slice(0, 10);
+  document.querySelectorAll('#view-manager .from-till').forEach((x) => x.classList.remove('from-till'));
   salesSheetImageDataUrl = null;
   document.getElementById('salesSheetInput').value = '';
   document.getElementById('salesSheetPreviewWrap').hidden = true;
@@ -5204,6 +5206,368 @@ function printAssetCount() {
     '<div class="sig"><div>Counted by</div><div>Signature</div><div>Date</div></div>'));
 }
 
+
+// ── Phase 2: till sessions (open with a float, close with a count) ───
+
+function posSession() { return posRead(posKey('session'), null); }
+function posSetSession(s) { posWrite(posKey('session'), s); }
+
+// The open session for this branch + till on this device, picking up one the
+// server knows about if this device lost its copy.
+function posCurrentSession() {
+  const dev = posDevice();
+  let s = posSession();
+  if (s && (s.branch !== posBranchNow() || s.till !== dev.till)) s = null;
+  if (!s && posCfg && posCfg.openSessions) {
+    const srv = posCfg.openSessions.filter((x) => x.till === dev.till)[0];
+    if (srv) { s = { id: srv.id, branch: posBranchNow(), till: dev.till, date: srv.date, float: srv.float, openedAt: srv.openedAt, openedBy: srv.openedBy }; posSetSession(s); }
+  }
+  return s && !s.closed ? s : null;
+}
+
+function renderPosSessionState() {
+  const s = posCurrentSession();
+  const today = posNowString().slice(0, 10);
+  const stale = s && s.date < today;
+  document.getElementById('posOpenPanel').hidden = !!s;
+  document.getElementById('posStalePanel').hidden = !stale;
+  document.getElementById('posSellGrid').hidden = !s || stale;
+  document.getElementById('posCloseTillBtn').hidden = !s;
+  document.getElementById('posSessionLine').textContent = s ? 'Opened ' + assetWhen(s.openedAt.slice(0, 16)) + ' by ' + s.openedBy + ' with a float of ' + rand(s.float) + '.' : '';
+  if (stale) document.getElementById('posStaleHint').textContent = 'Till ' + s.till + ' was opened on ' + assetWhen(s.date) + ' and never closed. Close it (count the drawer) before selling today.';
+  if (!s) {
+    const last = posRead('pos_lastfloat:' + posBranchNow() + ':' + posDevice().till, null);
+    const inp = document.getElementById('posFloatIn');
+    if (inp.value === '' && last !== null) inp.value = last;
+    document.getElementById('posOpenTitle').textContent = 'Open Till ' + posDevice().till;
+  }
+}
+
+function openPosTill() {
+  const err = document.getElementById('posOpenError');
+  const raw = document.getElementById('posFloatIn').value;
+  const float = posMoney(raw);
+  err.textContent = '';
+  if (raw === '' || !(float >= 0 && float <= 100000)) { err.textContent = 'Enter the cash in the drawer (R0 if it is empty).'; return; }
+  const dev = posDevice();
+  const s = { id: 'sess-' + posUid(), branch: posBranchNow(), till: dev.till, date: posNowString().slice(0, 10), float: float, openedAt: posNowString(), openedBy: posCashier().name };
+  posSetSession(s);
+  const q = posQueue();
+  q.push({ opId: 'open-' + s.id, type: 'open', branch: s.branch, session: { id: s.id, till: s.till, float: float, openedAt: s.openedAt, by: s.openedBy } });
+  posSetQueue(q);
+  document.getElementById('posFloatIn').value = '';
+  renderPosSell();
+  posSyncNow();
+}
+
+function posSessionSales(sid) { return posRecent().filter((x) => x.sessionId === sid && x.status !== 'Cancelled'); }
+
+function openPosCloseTill() {
+  const s = posSession();
+  if (!s || s.closed) return;
+  const list = posSessionSales(s.id).map((x) => ({ kind: x.kind || 'Sale', method: x.method, total: x.total }));
+  const t = { cashSales: 0, cardSales: 0, otherSales: 0, cashRefunds: 0, cardRefunds: 0, otherRefunds: 0, sales: 0 };
+  list.forEach((x) => {
+    const m = x.method === 'Cash' ? 'cash' : x.method === 'Card' ? 'card' : 'other';
+    if (x.kind === 'Refund') t[m + 'Refunds'] += -x.total; else { t[m + 'Sales'] += x.total; t.sales++; }
+  });
+  const expected = posMoney(s.float + t.cashSales - t.cashRefunds);
+  const row = (a, b, cls) => '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + a + '</td><td class="n">' + b + '</td></tr>';
+  openPosDialog({
+    title: 'Close Till ' + s.till, sub: s.branch + ' · opened ' + assetWhen(s.openedAt.slice(0, 16)) + ' by ' + s.openedBy,
+    body: '<table class="pos-mini pos-close-table">' + row('Sales', t.sales) + row('Card', rand(t.cardSales - t.cardRefunds)) + row('EFT / other', rand(t.otherSales - t.otherRefunds)) +
+      row('Opening float', rand(s.float)) + row('+ Cash sales', rand(t.cashSales)) + row('− Cash refunds', rand(t.cashRefunds)) +
+      row('<strong>Cash that should be in the drawer</strong>', '<strong>' + rand(expected) + '</strong>', 'pos-exp') + '</table>' +
+      '<div class="grid-2"><label>Cash counted in the drawer (R) <input type="number" id="pdCounted" min="0" step="0.01" inputmode="decimal"></label>' +
+      '<label>Float kept for tomorrow (R) <input type="number" id="pdKept" min="0" step="0.01" inputmode="decimal" value="' + s.float + '"></label></div>' +
+      '<p class="pos-diff" id="pdDiff"></p><label>Note (optional) <input type="text" id="pdNote" maxlength="300" placeholder="e.g. explain a short or over"></label>',
+    ok: 'Close till',
+    onOk: () => {
+      const cRaw = document.getElementById('pdCounted').value;
+      const counted = posMoney(cRaw);
+      const kept = posMoney(document.getElementById('pdKept').value);
+      if (cRaw === '' || !(counted >= 0)) return 'Count the cash in the drawer and enter it.';
+      if (!(kept >= 0 && kept <= counted)) return 'The float kept can\'t be more than the cash counted.';
+      const q = posQueue();
+      q.push({ opId: 'close-' + s.id, type: 'close', branch: s.branch, sessionId: s.id, counted: counted, floatKept: kept,
+        note: document.getElementById('pdNote').value.trim(), closedAt: posNowString(), by: posCashier().name });
+      posSetQueue(q);
+      posWrite('pos_lastfloat:' + s.branch + ':' + s.till, kept);
+      const closed = Object.assign({}, s, { closed: true, closedAt: posNowString(), closedBy: posCashier().name, counted: counted, floatKept: kept,
+        expected: expected, difference: posMoney(counted - expected), totals: t, note: document.getElementById('pdNote').value.trim() });
+      posSetSession(closed);
+      posWrite(posKey('lastclosed'), closed);
+      posSyncNow();
+      setTimeout(() => showPosClosed(closed), 0);
+      return '';
+    }
+  });
+  const upd = () => {
+    const c = document.getElementById('pdCounted').value;
+    const el = document.getElementById('pdDiff');
+    if (c === '') { el.textContent = ''; return; }
+    const d = posMoney(posMoney(c) - expected);
+    el.textContent = d === 0 ? 'Balances exactly.' : (d > 0 ? 'Over by ' + rand(d) : 'Short by ' + rand(-d));
+    el.className = 'pos-diff ' + (d === 0 ? 'ok' : d > 0 ? 'over' : 'short');
+  };
+  document.getElementById('pdCounted').addEventListener('input', upd);
+}
+
+function showPosClosed(c) {
+  openPosDialog({
+    title: 'Till ' + c.till + ' closed', sub: c.branch + ' · ' + assetWhen(c.closedAt.slice(0, 16)),
+    body: '<p class="pos-diff ' + (c.difference === 0 ? 'ok' : c.difference > 0 ? 'over' : 'short') + '">' +
+      (c.difference === 0 ? 'The drawer balances.' : (c.difference > 0 ? 'Over by ' : 'Short by ') + rand(Math.abs(c.difference))) + '</p>' +
+      '<p class="muted">Expected ' + rand(c.expected) + ', counted ' + rand(c.counted) + '. Float kept: ' + rand(c.floatKept) + '.</p>' +
+      '<p class="muted">Next: do the Daily Cash-Up. Tap <strong>Fill in from the till</strong> there and the sales, card and refund figures are entered for you.</p>' +
+      '<button type="button" class="btn-secondary pos-inline-btn" id="pdPrintZ">Print till slip</button>',
+    ok: featureOn('pos') && allowedPages().indexOf('cashup') !== -1 ? 'Go to Daily Cash-Up' : 'Done',
+    onOk: () => { if (allowedPages().indexOf('cashup') !== -1) setTimeout(() => openPage('cashup'), 0); return ''; }
+  });
+  document.getElementById('posDialogCancel').textContent = 'Stay on the till';
+  document.getElementById('pdPrintZ').addEventListener('click', () => printPosTillSlip(c));
+  renderPosSell();
+}
+
+function printPosTillSlip(c) {
+  const e = escapeHtml;
+  const t = c.totals || {};
+  const money = (v) => 'R' + Number(v || 0).toFixed(2);
+  const row = (a, b) => '<tr><td>' + a + '</td><td class="r">' + b + '</td></tr>';
+  const html = '<!doctype html><html><head><meta charset="utf-8"><style>@page{size:' + (posDevice().paper === 58 ? 58 : 80) + 'mm auto;margin:0}' +
+    'body{width:' + (posDevice().paper === 58 ? 48 : 72) + 'mm;margin:0 auto;padding:3mm 0 6mm;font-family:Arial,sans-serif;font-size:11.5px}' +
+    'h1{font-size:14px;text-align:center;margin:0 0 2mm}table{width:100%;border-collapse:collapse}td{padding:.5mm 0}.r{text-align:right}hr{border:0;border-top:1px dashed #000;margin:2mm 0}' +
+    '.b td{font-weight:bold;font-size:13px}</style></head><body><h1>TILL ' + c.till + ' CLOSED</h1><div style="text-align:center">' + e(c.branch) + '</div><hr><table>' +
+    row('Opened', e(assetWhen(c.openedAt.slice(0, 16)))) + row('By', e(c.openedBy)) + row('Closed', e(assetWhen(c.closedAt.slice(0, 16)))) + row('By', e(c.closedBy)) + '</table><hr><table>' +
+    row('Sales', t.sales || 0) + row('Cash sales', money(t.cashSales)) + row('Card sales', money(t.cardSales)) + row('EFT / other', money(t.otherSales)) +
+    row('Cash refunds', money(t.cashRefunds)) + row('Card refunds', money(t.cardRefunds)) + '</table><hr><table>' +
+    row('Opening float', money(c.float)) + row('Expected cash', money(c.expected)) + row('Counted cash', money(c.counted)) +
+    '<tr class="b"><td>' + (c.difference >= 0 ? 'Over' : 'Short') + '</td><td class="r">' + money(Math.abs(c.difference)) + '</td></tr>' + row('Float kept', money(c.floatKept)) +
+    '</table>' + (c.note ? '<hr>' + e(c.note) : '') + '<hr><div style="margin-top:8mm">Signature: ____________________</div></body></html>';
+  const frame = document.getElementById('posPrintFrame');
+  frame.onload = () => { frame.onload = null; try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (err) { /* ignore */ } };
+  frame.srcdoc = html;
+}
+
+// ── Phase 2: find a receipt, reprint, refund ───────────────────────
+
+let posFound = [];      // search results (server + this device)
+let posRefundFor = null;
+
+function openPosFind(prefill) {
+  document.getElementById('posReceiptTitle').textContent = 'Find a receipt';
+  document.getElementById('posFindRow').hidden = false;
+  document.getElementById('posFindIn').value = prefill || '';
+  document.getElementById('posReceiptBody').innerHTML = '<p class="muted">Type the number on the slip. The last digits are enough (e.g. 124).</p>';
+  document.getElementById('posReceiptBackdrop').hidden = false;
+  if (prefill) runPosFind(); else setTimeout(() => document.getElementById('posFindIn').focus(), 30);
+}
+
+// Merge a device-only sale (not sent yet) into the server's shape.
+function posLocalAsServer(x) {
+  return Object.assign({}, x, { kind: x.kind || 'Sale', pending: !x.sent,
+    lines: x.lines.map((l, i) => ({ line: l.line || i + 1, categoryId: l.categoryId, category: l.categoryName, description: l.description,
+      qty: x.kind === 'Refund' ? -l.qty : l.qty, price: l.price, lineTotal: (x.kind === 'Refund' ? -1 : 1) * posMoney(l.qty * l.price) })) });
+}
+
+async function runPosFind() {
+  const term = document.getElementById('posFindIn').value.trim().toUpperCase();
+  const body = document.getElementById('posReceiptBody');
+  if (!term) return;
+  body.innerHTML = '<p class="muted">Searching…</p>';
+  const digits = /^\d+$/.test(term) ? Number(term) : null;
+  const matches = (no) => no === term || (digits !== null && Number(no.split('-').pop()) === digits);
+  const local = posRecent().filter((x) => x.branch === posBranchNow());
+  const res = await apiGet('posReceipt', { email: currentUser.email, branch: posBranchNow(), q: term });
+  const byUid = {};
+  if (res.success) res.sales.forEach((x) => { byUid[x.uid] = x; });
+  local.filter((x) => matches(x.receiptNo)).forEach((x) => { if (!byUid[x.uid]) byUid[x.uid] = Object.assign(posLocalAsServer(x), { refunds: [] }); });
+  // refunds made on this device that the server doesn't have yet
+  Object.keys(byUid).forEach((u) => {
+    const s = byUid[u];
+    s.refunds = s.refunds || [];
+    local.filter((x) => x.kind === 'Refund' && x.refundOf === u && !s.refunds.some((r) => r.uid === x.uid)).forEach((x) => s.refunds.push(posLocalAsServer(x)));
+    local.filter((x) => x.kind === 'Refund' && x.status === 'Cancelled').forEach((x) => s.refunds.forEach((r) => { if (r.uid === x.uid) r.status = 'Cancelled'; }));
+  });
+  posFound = Object.keys(byUid).map((u) => byUid[u]).sort((a, b) => (a.time < b.time ? 1 : -1));
+  if (!posFound.length) {
+    body.innerHTML = '<p class="muted">' + (res.success ? 'No receipt ' + escapeHtml(term) + ' at ' + escapeHtml(posBranchNow()) + '.' : 'Offline — only receipts on this device can be found, and none match.') + '</p>';
+    return;
+  }
+  body.innerHTML = posFound.map((x, i) => posReceiptCard(x, i)).join('');
+}
+
+function posReceiptCard(x, i) {
+  const e = escapeHtml;
+  const refunded = posRefundedQty(x);
+  const canRefund = x.kind !== 'Refund' && x.status !== 'Cancelled' && x.lines.some((l) => l.qty - (refunded[l.line] || 0) > 0);
+  return '<div class="pos-rcpt-card">' +
+    '<div class="pos-rcpt-head"><strong>' + e(x.receiptNo) + '</strong>' + (x.kind === 'Refund' ? ' <span class="status-tag as-warn">Refund</span>' : '') +
+      (x.status === 'Cancelled' ? ' <span class="status-tag as-gone">Cancelled</span>' : '') + (x.pending ? ' <span class="status-tag as-info">Not sent yet</span>' : '') +
+      '<span class="muted">' + e(assetWhen(x.time.slice(0, 16))) + ' · ' + e(x.method) + ' · ' + e(x.cashierName) + '</span></div>' +
+    '<table class="pos-mini">' + x.lines.map((l) => '<tr><td>' + Math.abs(l.qty) + ' × ' + e(l.category + (l.description ? ' – ' + l.description : '')) +
+      (refunded[l.line] ? ' <span class="muted">(' + refunded[l.line] + ' refunded)</span>' : '') + '</td><td class="n">' + rand(l.lineTotal) + '</td></tr>').join('') +
+      '<tr><td><strong>Total</strong></td><td class="n"><strong>' + rand(x.total) + '</strong></td></tr></table>' +
+    (x.kind === 'Refund' ? '<p class="muted">Refund of ' + e(x.refundOfReceipt || '') + (x.refundReason ? ' — ' + e(x.refundReason) : '') + '</p>' : '') +
+    (x.refunds && x.refunds.length ? '<p class="muted">' + x.refunds.map((r) => 'Refunded ' + rand(-r.total) + ' on ' + e(assetWhen(r.time.slice(0, 16))) + ' (' + e(r.receiptNo) + ')' +
+      (r.status === 'Cancelled' ? ' — cancelled' : '')).join('<br>') + '</p>' : '') +
+    '<div class="asset-actions"><button type="button" class="btn-secondary" data-rcpt-print="' + i + '">Reprint</button>' +
+      (canRefund ? '<button type="button" class="btn-primary" data-rcpt-refund="' + i + '">Refund…</button>' : '') + '</div></div>';
+}
+
+function posRefundedQty(x) {
+  const out = {};
+  (x.refunds || []).filter((r) => r.status !== 'Cancelled').forEach((r) => r.lines.forEach((l) => { out[l.line] = (out[l.line] || 0) + Math.abs(l.qty); }));
+  return out;
+}
+
+function posServerToReceipt(x) {
+  return Object.assign({}, x, { lines: x.lines.map((l) => ({ line: l.line, categoryId: l.categoryId, categoryName: l.category, description: l.description,
+    qty: Math.abs(l.qty), price: l.price })) });
+}
+
+function openPosRefund(i) {
+  const x = posFound[i];
+  posRefundFor = x;
+  const refunded = posRefundedQty(x);
+  const e = escapeHtml;
+  document.getElementById('posReceiptTitle').textContent = 'Refund · ' + x.receiptNo;
+  document.getElementById('posFindRow').hidden = true;
+  document.getElementById('posReceiptBody').innerHTML =
+    '<p class="muted">Choose how many of each item come back. Prices are from the original sale.</p>' +
+    '<div class="pos-refund-lines">' + x.lines.map((l) => {
+      const left = l.qty - (refunded[l.line] || 0);
+      return '<div class="pos-refund-line"><span><strong>' + e(l.category + (l.description ? ' – ' + l.description : '')) + '</strong><span class="muted">' +
+        l.qty + ' sold @ ' + rand(l.price) + (refunded[l.line] ? ' · ' + refunded[l.line] + ' already refunded' : '') + '</span></span>' +
+        '<input type="number" min="0" max="' + left + '" step="1" value="0" data-rf-line="' + l.line + '" data-rf-price="' + l.price + '"' + (left ? '' : ' disabled') + ' aria-label="Quantity to refund"></div>';
+    }).join('') + '</div>' +
+    '<div class="grid-2"><label>Refund paid by <select id="rfMethod">' + posCfg.methods.map((m) => '<option' + (m === x.method ? ' selected' : '') + '>' + e(m) + '</option>').join('') + '</select></label>' +
+    '<label>Reason <input type="text" id="rfReason" maxlength="300" placeholder="e.g. wrong size, faulty"></label></div>' +
+    '<div class="pos-line-total"><span>Refund total</span><strong id="rfTotal">R 0.00</strong></div>' +
+    '<p class="error-text" id="rfError"></p>' +
+    '<div class="user-edit-actions"><button type="button" class="btn-secondary" id="rfBack">Back</button><button type="button" class="btn-primary" id="rfGo">Refund</button></div>';
+  const upd = () => {
+    let t = 0;
+    document.querySelectorAll('[data-rf-line]').forEach((inp) => { t += (Number(inp.value) || 0) * Number(inp.dataset.rfPrice); });
+    document.getElementById('rfTotal').textContent = rand(t);
+    document.getElementById('rfGo').textContent = t ? 'Refund ' + rand(t) : 'Refund';
+  };
+  document.querySelectorAll('[data-rf-line]').forEach((inp) => inp.addEventListener('input', upd));
+  document.getElementById('rfBack').addEventListener('click', () => { document.getElementById('posFindRow').hidden = false; document.getElementById('posReceiptTitle').textContent = 'Find a receipt'; runPosFind(); });
+  document.getElementById('rfGo').addEventListener('click', doPosRefund);
+}
+
+function doPosRefund() {
+  const x = posRefundFor;
+  const err = document.getElementById('rfError');
+  err.textContent = '';
+  const refunded = posRefundedQty(x);
+  const lines = [];
+  let bad = '';
+  document.querySelectorAll('[data-rf-line]').forEach((inp) => {
+    const qty = Number(inp.value) || 0;
+    if (!qty) return;
+    const ol = x.lines.filter((l) => String(l.line) === inp.dataset.rfLine)[0];
+    const left = ol.qty - (refunded[ol.line] || 0);
+    if (qty < 0 || qty > left || Math.round(qty) !== qty) bad = 'Only ' + left + ' × ' + (ol.description || ol.category) + ' can be refunded.';
+    lines.push({ line: ol.line, categoryId: ol.categoryId, categoryName: ol.category, description: ol.description, qty: qty, price: ol.price });
+  });
+  if (bad) { err.textContent = bad; return; }
+  if (!lines.length) { err.textContent = 'Choose what is being refunded.'; return; }
+  const reason = document.getElementById('rfReason').value.trim();
+  if (!reason) { err.textContent = 'Give a reason for the refund.'; return; }
+  const session = posCurrentSession();
+  if (!session) { err.textContent = 'Open the till first.'; return; }
+  const dev = posDevice();
+  const branch = posBranchNow();
+  const seqKey = 'pos_seq:' + branch + ':' + dev.till;
+  const seq = Math.max(Number(posRead(seqKey, 0)) || 0, Number((posCfg.lastSeq || {})[String(dev.till)]) || 0) + 1;
+  const total = -posMoney(lines.reduce((t, l) => t + posMoney(l.qty * l.price), 0));
+  const cashier = posCashier();
+  const refund = { uid: posUid(), receiptNo: (posCfg.codes[branch] || 'BR') + '-T' + dev.till + '-' + String(seq).padStart(6, '0'), till: dev.till, time: posNowString(),
+    cashierId: cashier.id, cashierName: cashier.name, method: document.getElementById('rfMethod').value, total: total, cashReceived: null, change: null,
+    kind: 'Refund', refundOf: x.uid, refundOfReceipt: x.receiptNo, reason: reason, sessionId: session.id, lines: lines };
+  const q = posQueue();
+  q.push({ opId: 'o-' + refund.uid, type: 'sale', branch: branch, sale: Object.assign({}, refund, { lines: lines.map((l) => ({ line: l.line, qty: l.qty })) }) });
+  posSetQueue(q);
+  posWrite(seqKey, seq);
+  const recent = posRecent();
+  recent.unshift(Object.assign({ branch: branch, status: 'Completed', sent: false }, refund));
+  posSetRecent(recent);
+  document.getElementById('posReceiptBody').innerHTML = '<div class="pos-done"><p class="pos-done-title">Refund done</p>' +
+    '<p class="pos-done-change">' + (refund.method === 'Cash' ? 'Give back ' + rand(-total) + ' cash' : rand(-total) + ' · ' + escapeHtml(refund.method)) + '</p>' +
+    '<p class="muted">' + escapeHtml(refund.receiptNo) + ' · refund of ' + escapeHtml(x.receiptNo) + '</p>' +
+    (refund.method === 'Card' ? '<p class="muted">Do the refund on the card machine too.</p>' : '') +
+    '<div class="pos-done-actions"><button type="button" class="btn-secondary" id="rfPrint">Print refund slip</button><button type="button" class="btn-primary" id="rfDone">Done</button></div></div>';
+  document.getElementById('rfPrint').addEventListener('click', () => printPosReceipt(Object.assign({ branch: branch }, refund), false));
+  document.getElementById('rfDone').addEventListener('click', () => { document.getElementById('posReceiptBackdrop').hidden = true; });
+  if (posDevice().autoPrint) printPosReceipt(Object.assign({ branch: branch }, refund), false);
+  renderPosRecent();
+  posSyncNow();
+}
+
+// ── Phase 2: the Daily Cash-Up gets the till's figures ─────────────
+
+let tillCashup = null;
+let tillCashupSeq = 0;
+
+async function loadTillCashup() {
+  const card = document.getElementById('tillCashupCard');
+  card.hidden = !featureOn('pos');
+  if (card.hidden) return;
+  const branch = document.getElementById('mBranch').value.trim();
+  const date = document.getElementById('mDate').value;
+  const body = document.getElementById('tillCashupBody');
+  if (!branch || !date) { body.innerHTML = '<p class="muted">Choose the branch and date.</p>'; return; }
+  const seq = ++tillCashupSeq;
+  body.innerHTML = '<p class="muted">Checking the till for ' + escapeHtml(assetWhen(date)) + '…</p>';
+  const res = await apiGet('posCashup', { email: currentUser.email, branch: branch, date: date });
+  if (seq !== tillCashupSeq) return;
+  if (!res.success) { body.innerHTML = '<p class="muted">' + escapeHtml(res.networkError ? 'Offline — can\'t check the till right now.' : (res.error || 'Could not check the till.')) + '</p>'; tillCashup = null; return; }
+  tillCashup = res;
+  if (!res.count && !res.refundCount) { body.innerHTML = '<p class="muted">No till sales were recorded at ' + escapeHtml(branch) + ' on ' + escapeHtml(assetWhen(date)) + '. Fill in the form by hand.</p>'; return; }
+  const e = escapeHtml;
+  const open = res.sessions.filter((s) => s.status === 'Open');
+  const gross = posMoney(res.cashSales + res.cardSales + res.otherSales - res.cardRefunds - res.otherRefunds);
+  body.innerHTML =
+    '<div class="till-cu-grid">' +
+      '<div><span class="kpi-label">Sales</span><strong>' + res.count + '</strong></div>' +
+      '<div><span class="kpi-label">Cash</span><strong>' + rand(res.cashSales) + '</strong></div>' +
+      '<div><span class="kpi-label">Card</span><strong>' + rand(res.cardSales) + '</strong></div>' +
+      '<div><span class="kpi-label">EFT / other</span><strong>' + rand(res.otherSales) + '</strong></div>' +
+      '<div><span class="kpi-label">Refunds</span><strong>' + rand(res.cashRefunds + res.cardRefunds + res.otherRefunds) + '</strong></div>' +
+    '</div>' +
+    '<p class="muted">Receipts ' + e(res.firstReceipt) + ' to ' + e(res.lastReceipt) + ' · cashiers: ' + e(res.cashiers.join(', ')) +
+      (res.cancelled ? ' · ' + res.cancelled + ' cancelled (' + rand(res.cancelledValue) + ', not counted)' : '') + '</p>' +
+    (res.sessions.length ? '<table class="pos-mini">' + res.sessions.map((s) => '<tr><td>Till ' + s.till + ' · ' + (s.status === 'Open' ? '<strong>still open</strong>' :
+      'counted ' + rand(s.counted) + ' vs expected ' + rand(s.expected)) + '</td><td class="n">' + (s.status === 'Open' ? '' :
+      '<span class="pos-diff ' + (s.difference === 0 ? 'ok' : s.difference > 0 ? 'over' : 'short') + '">' + (s.difference === 0 ? 'balances' : (s.difference > 0 ? 'over ' : 'short ') + rand(Math.abs(s.difference))) + '</span>') + '</td></tr>').join('') + '</table>' : '') +
+    (open.length ? '<p class="error-text">Close the till first (on the Till tab), so all of the day\'s sales are in.</p>' : '') +
+    '<button type="button" class="btn-primary pos-inline-btn" id="tillFillBtn">Fill in from the till</button>' +
+    '<p class="muted till-cu-note">Fills in: gross sales ' + rand(gross) + ', cash refunds ' + rand(res.cashRefunds) + ', ' + res.cardCount + ' card sales, ' +
+      'card total ' + rand(res.cardSales - res.cardRefunds + res.otherSales - res.otherRefunds) + (res.otherSales ? ' (includes EFT / other)' : '') +
+      ', cashier names' + (res.sessions.some((s) => s.floatKept !== null) ? ' and the float kept' : '') + '. You still count the cash and add donations and expenses.</p>';
+  document.getElementById('tillFillBtn').addEventListener('click', fillCashupFromTill);
+}
+
+function fillCashupFromTill() {
+  const r = tillCashup;
+  if (!r) return;
+  const set = (id, v) => { const el = document.getElementById(id); el.value = v; el.classList.add('from-till'); };
+  set('zReadingNo', 'Till ' + r.firstReceipt + ' – ' + r.lastReceipt.split('-').pop());
+  set('grossSales', posMoney(r.cashSales + r.cardSales + r.otherSales - r.cardRefunds - r.otherRefunds).toFixed(2));
+  set('cashRefundsAmount', posMoney(r.cashRefunds).toFixed(2));
+  set('cardSalesCount', r.cardCount);
+  set('totalCardSales', posMoney(r.cardSales - r.cardRefunds + r.otherSales - r.otherRefunds).toFixed(2));
+  if (r.cashiers.length) set('mCasher', r.cashiers.join(', '));
+  const kept = r.sessions.filter((s) => s.floatKept !== null).reduce((t, s) => t + s.floatKept, 0);
+  if (r.sessions.some((s) => s.floatKept !== null)) set('floatAmount', posMoney(kept).toFixed(2));
+  const refundNote = document.getElementById('refundsExplain');
+  if (r.refundCount && !refundNote.value) set('refundsExplain', r.refundCount + ' refund' + (r.refundCount === 1 ? '' : 's') + ' on the till (see the daily sales sheet).');
+  recalcAll();
+  document.getElementById('tillFillBtn').textContent = 'Filled in ✓ — fill in again';
+}
+
 function openAssetCategory(cat) {
   assetCatEditing = cat || null;
   document.getElementById('assetCatTitle').textContent = cat ? 'Edit category' : 'New category';
@@ -5489,6 +5853,7 @@ function renderPosSell() {
     '<button type="button" class="pos-method' + (posSale.method === m ? ' is-on' : '') + '" data-method="' + escapeAttr(m) + '">' + escapeHtml(m) + '</button>').join('');
   renderPosSale();
   renderPosRecent();
+  renderPosSessionState();
 }
 
 function posSaleTotal() { return posMoney(posSale.lines.reduce((t, l) => t + posMoney(l.qty * l.price), 0)); }
@@ -5584,6 +5949,8 @@ async function completePosSale() {
   const cashRaw = document.getElementById('posCashIn').value;
   const cash = posSale.method === 'Cash' ? (cashRaw === '' ? total : posMoney(cashRaw)) : null;
   if (cash !== null && cash < total) { err.textContent = 'Cash received is less than the total.'; return; }
+  const session = posCurrentSession();
+  if (!session) { renderPosSessionState(); return; }
   const dev = posDevice();
   const branch = posBranchNow();
   const code = posCfg.codes[branch] || 'BR';
@@ -5593,7 +5960,7 @@ async function completePosSale() {
   const sale = {
     uid: posUid(), receiptNo: code + '-T' + dev.till + '-' + String(seq).padStart(6, '0'), till: dev.till, time: posNowString(),
     cashierId: cashier.id, cashierName: cashier.name, method: posSale.method, total: total,
-    cashReceived: cash, change: cash !== null ? posMoney(cash - total) : null,
+    cashReceived: cash, change: cash !== null ? posMoney(cash - total) : null, sessionId: session.id,
     lines: posSale.lines.map((l) => ({ categoryId: l.categoryId, categoryName: l.categoryName, qty: l.qty, price: l.price, description: l.description }))
   };
   const q = posQueue();
@@ -5622,14 +5989,17 @@ function renderPosRecent() {
   const branch = posBranchNow();
   const list = posRecent().filter((s) => s.branch === branch && s.time.slice(0, 10) === today);
   const totals = list.filter((s) => s.status !== 'Cancelled').reduce((t, s) => t + s.total, 0);
-  document.getElementById('posRecent').innerHTML = list.length ? '<p class="muted pos-recent-sum">' + list.length + ' sale' + (list.length === 1 ? '' : 's') + ' · ' + rand(totals) + ' (not counting cancelled)</p>' +
-    list.map((s) => '<div class="fin-line' + (s.status === 'Cancelled' ? ' pos-cancelled' : '') + '"><span class="fin-line-main">' +
-      '<span class="fin-line-desc">' + escapeHtml(s.time.slice(11, 16)) + ' · ' + escapeHtml(s.receiptNo) + ' · ' + escapeHtml(s.lines.map((l) => l.qty + '× ' + (l.description || l.categoryName)).join(', ')) + '</span>' +
+  const nSales = list.filter((s) => s.kind !== 'Refund').length;
+  document.getElementById('posRecent').innerHTML = list.length ? '<p class="muted pos-recent-sum">' + nSales + ' sale' + (nSales === 1 ? '' : 's') + ' · ' + rand(totals) + ' after refunds (not counting cancelled)</p>' +
+    list.map((s) => '<div class="fin-line' + (s.status === 'Cancelled' ? ' pos-cancelled' : '') + (s.kind === 'Refund' ? ' pos-is-refund' : '') + '"><span class="fin-line-main">' +
+      '<span class="fin-line-desc">' + escapeHtml(s.time.slice(11, 16)) + ' · ' + escapeHtml(s.receiptNo) + ' · ' + (s.kind === 'Refund' ? '<strong>Refund of ' + escapeHtml(s.refundOfReceipt || '') + ':</strong> ' : '') +
+      escapeHtml(s.lines.map((l) => l.qty + '× ' + (l.description || l.categoryName)).join(', ')) + '</span>' +
       '<span class="fin-line-meta">' + escapeHtml(s.method) + ' · ' + escapeHtml(s.cashierName) + ' · ' + (s.sent ? 'sent' : '<strong>waiting to send</strong>') +
       (s.status === 'Cancelled' ? ' · cancelled: ' + escapeHtml(s.cancelReason || '') : '') + '</span></span>' +
       '<span class="fin-line-side"><span class="fin-line-amt">' + rand(s.total) + '</span>' +
       '<button type="button" class="link-btn" data-reprint="' + escapeAttr(s.uid) + '">Reprint</button>' +
-      (s.status !== 'Cancelled' ? '<button type="button" class="link-btn asset-file-rm" data-void="' + escapeAttr(s.uid) + '">Cancel sale</button>' : '') +
+      (s.status !== 'Cancelled' && s.kind !== 'Refund' ? '<button type="button" class="link-btn" data-refund="' + escapeAttr(s.receiptNo) + '">Refund</button>' : '') +
+      (s.status !== 'Cancelled' ? '<button type="button" class="link-btn asset-file-rm" data-void="' + escapeAttr(s.uid) + '">' + (s.kind === 'Refund' ? 'Cancel refund' : 'Cancel sale') + '</button>' : '') +
       '</span></div>').join('') : '<p class="muted">No sales on this till yet today.</p>';
 }
 
@@ -5637,9 +6007,11 @@ function openPosVoid(uid) {
   const s = posRecent().filter((x) => x.uid === uid)[0];
   if (!s) return;
   openPosDialog({
-    title: 'Cancel sale', sub: s.receiptNo + ' · ' + rand(s.total) + ' · ' + s.method,
-    body: '<p class="muted">The sale stays on record, marked as cancelled, and is left out of the totals. ' +
-      (s.method === 'Cash' ? 'Give back the ' + rand(s.total) + ' cash if the customer paid.' : 'Reverse the card payment on the card machine if needed.') + '</p>' +
+    title: s.kind === 'Refund' ? 'Cancel refund' : 'Cancel sale', sub: s.receiptNo + ' · ' + rand(s.total) + ' · ' + s.method,
+    body: '<p class="muted">' + (s.kind === 'Refund' ? 'Use this if the refund was entered by mistake. It stays on record, marked as cancelled. ' +
+      (s.method === 'Cash' ? 'The ' + rand(-s.total) + ' cash should go back in the drawer.' : '')
+      : 'The sale stays on record, marked as cancelled, and is left out of the totals. ' +
+      (s.method === 'Cash' ? 'Give back the ' + rand(s.total) + ' cash if the customer paid.' : 'Reverse the card payment on the card machine if needed.')) + '</p>' +
       '<label>Reason <input type="text" id="pdReason" maxlength="300" placeholder="e.g. rang up twice, customer changed mind"></label>',
     ok: 'Cancel sale',
     onOk: () => {
@@ -5708,8 +6080,10 @@ function posReceiptHtml(sale, copy) {
   const logo = new URL('assets/logo.jpg', location.href).href;
   const rc = posCfg.receipt || {};
   const money = (v) => 'R' + Number(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const isRefund = sale.kind === 'Refund';
+  const sign = isRefund ? '-' : '';
   const lines = sale.lines.map((l) => '<tr><td colspan="2">' + e(l.qty + ' × ' + (l.description ? l.categoryName + ' – ' + l.description : l.categoryName)) + '</td></tr>' +
-    '<tr><td class="sm">@ ' + money(l.price) + '</td><td class="r">' + money(posMoney(l.qty * l.price)) + '</td></tr>').join('');
+    '<tr><td class="sm">@ ' + money(l.price) + '</td><td class="r">' + sign + money(posMoney(l.qty * l.price)) + '</td></tr>').join('');
   return '<!doctype html><html><head><meta charset="utf-8"><title>' + e(sale.receiptNo) + '</title><style>' +
     '@page{size:' + (dev.paper === 58 ? 58 : 80) + 'mm auto;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0}' +
     'body{width:' + w + 'mm;margin:0 auto;padding:3mm 0 6mm;font-family:Arial,Helvetica,sans-serif;font-size:11.5px;color:#000}' +
@@ -5721,11 +6095,12 @@ function posReceiptHtml(sale, copy) {
     (copy ? '<div class="copy">COPY — REPRINTED</div>' : '') +
     '<img src="' + e(logo) + '" alt=""><div class="c hd"><h1>' + e((rc.header || '').split('\n')[0]) + '</h1>' + e((rc.header || '').split('\n').slice(1).join('\n')) + '</div>' +
     '<div class="c">' + e(sale.branch || posBranchNow()) + '</div><hr>' +
+    (isRefund ? '<div class="void">REFUND</div><div class="c">Refund of ' + e(sale.refundOfReceipt || '') + '</div><div class="c sm">' + e(sale.reason || sale.refundReason || '') + '</div><hr>' : '') +
     '<table><tr><td>Receipt</td><td class="r">' + e(sale.receiptNo) + '</td></tr><tr><td>Date</td><td class="r">' + e(assetWhen(sale.time.slice(0, 16))) + '</td></tr>' +
     '<tr><td>Cashier</td><td class="r">' + e(sale.cashierName) + '</td></tr></table><hr>' +
     '<table>' + lines + '</table><hr>' +
-    '<table><tr class="tot"><td>TOTAL</td><td class="r">' + money(sale.total) + '</td></tr>' +
-    '<tr><td>Paid by</td><td class="r">' + e(sale.method) + '</td></tr>' +
+    '<table><tr class="tot"><td>' + (isRefund ? 'REFUNDED' : 'TOTAL') + '</td><td class="r">' + money(Math.abs(sale.total)) + '</td></tr>' +
+    '<tr><td>' + (isRefund ? 'Refunded by' : 'Paid by') + '</td><td class="r">' + e(sale.method) + '</td></tr>' +
     (sale.cashReceived !== null && sale.cashReceived !== undefined ? '<tr><td>Cash received</td><td class="r">' + money(sale.cashReceived) + '</td></tr><tr><td>Change</td><td class="r">' + money(sale.change || 0) + '</td></tr>' : '') +
     '<tr><td>Items</td><td class="r">' + sale.lines.reduce((t, l) => t + l.qty, 0) + '</td></tr></table>' +
     (sale.status === 'Cancelled' ? '<div class="void">CANCELLED</div>' : '') + '<hr>' +
@@ -5768,7 +6143,7 @@ async function loadPosSheet() {
   const local = posRecent().filter((s) => s.branch === branch && s.time.slice(0, 10) === date);
   local.forEach((s) => {
     if (known[s.uid]) { if (s.status === 'Cancelled' && known[s.uid].status !== 'Cancelled') Object.assign(known[s.uid], { status: 'Cancelled', cancelReason: s.cancelReason, pending: true }); return; }
-    sales.push(Object.assign({}, s, { pending: true, lines: s.lines.map((l) => ({ category: l.categoryName, description: l.description, qty: l.qty, price: l.price, lineTotal: posMoney(l.qty * l.price) })) }));
+    sales.push(Object.assign(posLocalAsServer(s), { pending: true }));
   });
   if (!res.success && !local.length) {
     body.innerHTML = '<p class="error-text">' + escapeHtml(res.networkError ? 'You are offline. Only sales made on this device are shown once you reconnect.' : res.error || 'Could not load the sheet.') + '</p>';
@@ -5776,18 +6151,26 @@ async function loadPosSheet() {
     return;
   }
   sales.sort((a, b) => (a.time < b.time ? -1 : 1));
-  posSheetData = { branch: branch, date: date, sales: sales, offline: !res.success };
+  posSheetData = { branch: branch, date: date, sales: sales, offline: !res.success, sessions: res.success ? (res.sessions || []) : [] };
   body.innerHTML = posSheetHtml(posSheetData, false);
 }
 
 function posSheetSummary(data) {
   const live = data.sales.filter((s) => s.status !== 'Cancelled');
-  const sum = { total: 0, items: 0, sales: live.length, methods: {}, cats: {}, cancelled: data.sales.length - live.length, cancelledValue: 0 };
+  const sum = { total: 0, items: 0, sales: live.filter((s) => s.kind !== 'Refund').length, methods: {}, cats: {}, cancelled: data.sales.length - live.length,
+    cancelledValue: 0, refunds: live.filter((s) => s.kind === 'Refund').length, refundValue: 0, cashiers: {} };
   live.forEach((s) => {
     sum.total += s.total; sum.methods[s.method] = (sum.methods[s.method] || 0) + s.total;
+    const c = sum.cashiers[s.cashierName || '—'] = sum.cashiers[s.cashierName || '—'] || { sales: 0, total: 0, refunds: 0, cancelled: 0 };
+    if (s.kind === 'Refund') { sum.refundValue += -s.total; c.refunds += -s.total; } else { c.sales++; }
+    c.total += s.total;
     s.lines.forEach((l) => { sum.items += l.qty; const k = l.category || 'Other'; sum.cats[k] = sum.cats[k] || { qty: 0, amt: 0 }; sum.cats[k].qty += l.qty; sum.cats[k].amt += l.lineTotal; });
   });
-  data.sales.filter((s) => s.status === 'Cancelled').forEach((s) => { sum.cancelledValue += s.total; });
+  data.sales.filter((s) => s.status === 'Cancelled').forEach((s) => {
+    sum.cancelledValue += s.total;
+    const c = sum.cashiers[s.cashierName || '—'] = sum.cashiers[s.cashierName || '—'] || { sales: 0, total: 0, refunds: 0, cancelled: 0 };
+    c.cancelled++;
+  });
   sum.total = posMoney(sum.total);
   return sum;
 }
@@ -5796,8 +6179,9 @@ function posSheetHtml(data, forPrint) {
   const e = escapeHtml;
   const sum = posSheetSummary(data);
   const rows = [];
-  data.sales.forEach((s) => s.lines.forEach((l, i) => rows.push('<tr class="' + (s.status === 'Cancelled' ? 'pos-x' : '') + '">' +
-    '<td class="n">' + l.qty + '</td><td>' + e(l.category + (l.description ? ' – ' + l.description : '')) +
+  data.sales.forEach((s) => s.lines.forEach((l, i) => rows.push('<tr class="' + (s.status === 'Cancelled' ? 'pos-x' : '') + (s.kind === 'Refund' ? ' pos-rf' : '') + '">' +
+    '<td class="n">' + l.qty + '</td><td>' + (s.kind === 'Refund' && i === 0 ? '<strong>Refund' + (s.refundReason || s.reason ? ' (' + e(s.refundReason || s.reason) + ')' : '') + ':</strong> ' : '') +
+    e(l.category + (l.description ? ' – ' + l.description : '')) +
     (i === 0 && s.status === 'Cancelled' ? ' <em>(cancelled: ' + e(s.cancelReason || '') + ')</em>' : '') + '</td>' +
     '<td>' + e(s.time.slice(11, 16)) + '</td><td class="n">' + rand(l.lineTotal) + '</td>' +
     '<td class="sm">' + (i === 0 ? e(s.receiptNo) + (s.pending ? ' *' : '') : '') + '</td><td class="sm">' + (i === 0 ? e(s.method) : '') + '</td>' +
@@ -5813,8 +6197,17 @@ function posSheetHtml(data, forPrint) {
       rows.join('') + '</tbody><tfoot><tr><td class="n">' + sum.items + '</td><td>Total</td><td></td><td class="n">' + rand(sum.total) + '</td><td colspan="3"></td></tr></tfoot></table></div>'
       : '<p class="muted">No sales on this day.</p>') +
     (rows.length ? '<div class="pos-sheet-cols"><div><h3>By payment</h3><table class="pos-mini">' + methods + '</table>' +
-      (sum.cancelled ? '<p class="muted">' + sum.cancelled + ' cancelled sale' + (sum.cancelled === 1 ? '' : 's') + ' (' + rand(sum.cancelledValue) + ') not counted.</p>' : '') + '</div>' +
+      (sum.refunds ? '<p class="muted">Includes ' + sum.refunds + ' refund' + (sum.refunds === 1 ? '' : 's') + ' (' + rand(sum.refundValue) + ').</p>' : '') +
+      (sum.cancelled ? '<p class="muted">' + sum.cancelled + ' cancelled sale' + (sum.cancelled === 1 ? '' : 's') + ' (' + rand(sum.cancelledValue) + ') not counted.</p>' : '') +
+      '<h3>By cashier</h3><table class="pos-mini"><tr><th>Cashier</th><th class="n">Sales</th><th class="n">Refunds</th><th class="n">Cancelled</th><th class="n">Net</th></tr>' +
+      Object.keys(sum.cashiers).map((k) => { const c = sum.cashiers[k]; return '<tr><td>' + e(k) + '</td><td class="n">' + c.sales + '</td><td class="n">' + (c.refunds ? rand(c.refunds) : '—') +
+        '</td><td class="n">' + (c.cancelled || '—') + '</td><td class="n">' + rand(c.total) + '</td></tr>'; }).join('') + '</table></div>' +
       '<div><h3>By category</h3><table class="pos-mini"><tr><th>Category</th><th class="n">Qty</th><th class="n">Amount</th></tr>' + cats + '</table></div></div>' : '') +
+    (data.sessions && data.sessions.length ? '<h3 class="pos-sess-h">Tills opened and closed</h3><table class="pos-mini"><tr><th>Till</th><th>Opened</th><th class="n">Float</th><th>Closed</th><th class="n">Expected</th><th class="n">Counted</th><th class="n">Over / short</th></tr>' +
+      data.sessions.map((x) => '<tr><td>' + x.till + '</td><td>' + e(x.openedAt.slice(11, 16)) + ' ' + e(x.openedBy) + '</td><td class="n">' + rand(x.float) + '</td><td>' +
+        (x.status === 'Closed' ? e(x.closedAt.slice(11, 16)) + ' ' + e(x.closedBy) : '<strong>still open</strong>') + '</td><td class="n">' + (x.expected !== null ? rand(x.expected) : '') + '</td><td class="n">' +
+        (x.counted !== null ? rand(x.counted) : '') + '</td><td class="n">' + (x.difference !== null ? (x.difference === 0 ? 'balances' : (x.difference > 0 ? 'over ' : 'short ') + rand(Math.abs(x.difference))) : '') + '</td></tr>' +
+        (x.note ? '<tr><td></td><td colspan="6" class="muted">' + e(x.note) + '</td></tr>' : '')).join('') + '</table>' : '') +
     (data.sales.some((s) => s.pending) ? '<p class="muted">* still on this device, waiting to be sent.</p>' : '');
 }
 
@@ -5985,6 +6378,7 @@ function openPosDialog(spec) {
   document.getElementById('posDialogError').textContent = '';
   document.getElementById('posDialogOk').textContent = spec.ok || 'OK';
   document.getElementById('posDialogOk').disabled = false;
+  document.getElementById('posDialogCancel').textContent = 'Back';
   document.getElementById('posDialogBackdrop').hidden = false;
   const first = document.querySelector('#posDialogBody input');
   if (first) setTimeout(() => first.focus(), 30);
@@ -6049,7 +6443,23 @@ async function posDialogConfirm() {
   });
   el('posNewSale').addEventListener('click', () => { posHideDone(); renderPosSale(); });
   el('posPrintBtn').addEventListener('click', () => { if (posLastDone) printPosReceipt(posLastDone, false); });
+  el('posOpenBtn').addEventListener('click', openPosTill);
+  el('posFloatIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') openPosTill(); });
+  el('posStaleClose').addEventListener('click', openPosCloseTill);
+  el('posCloseTillBtn').addEventListener('click', openPosCloseTill);
+  el('posFindBtn').addEventListener('click', () => openPosFind(''));
+  el('posFindGo').addEventListener('click', runPosFind);
+  el('posFindIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') runPosFind(); });
+  el('posReceiptClose').addEventListener('click', () => { el('posReceiptBackdrop').hidden = true; });
+  el('posReceiptBody').addEventListener('click', (e) => {
+    const p = e.target.closest('[data-rcpt-print]');
+    if (p) { const x = posFound[Number(p.dataset.rcptPrint)]; printPosReceipt(posServerToReceipt(x), true); return; }
+    const r = e.target.closest('[data-rcpt-refund]');
+    if (r) openPosRefund(Number(r.dataset.rcptRefund));
+  });
   el('posRecent').addEventListener('click', (e) => {
+    const rf = e.target.closest('[data-refund]');
+    if (rf) { openPosFind(rf.dataset.refund); return; }
     const r = e.target.closest('[data-reprint]');
     if (r) { const s = posRecent().filter((x) => x.uid === r.dataset.reprint)[0]; if (s) printPosReceipt(s, true); return; }
     const v = e.target.closest('[data-void]');
@@ -6105,7 +6515,9 @@ async function posDialogConfirm() {
   el('posDialogCancel').addEventListener('click', () => { el('posDialogBackdrop').hidden = true; });
   el('posDialogClose').addEventListener('click', () => { el('posDialogBackdrop').hidden = true; });
   window.addEventListener('online', () => { if (posCfg) posSyncNow(); });
-  ['posLineBackdrop', 'posPinBackdrop', 'posDialogBackdrop'].forEach((id) => guardModalBackdrop(id));
+  ['posLineBackdrop', 'posPinBackdrop', 'posDialogBackdrop', 'posReceiptBackdrop'].forEach((id) => guardModalBackdrop(id));
+  el('mDate').addEventListener('change', loadTillCashup);
+  el('mBranch').addEventListener('change', loadTillCashup);
 })();
 
 function escapeHtml(str) {

@@ -140,6 +140,11 @@
       </div>
     </div>
 
+    <div class="card till-cashup-card" id="tillCashupCard" hidden>
+      <h2>From the till</h2>
+      <div id="tillCashupBody"><p class="muted">Checking the till…</p></div>
+    </div>
+
     <div class="card">
       <h2>Z Reading &amp; Sales Summary</h2>
       <div class="grid-2">
@@ -482,7 +487,21 @@
       <p class="muted" id="posLoading">Loading the till…</p>
 
       <div id="pt-sell" class="fin-panel" hidden>
-        <div class="pos-grid">
+        <div class="pos-open-panel" id="posOpenPanel" hidden>
+          <h2 id="posOpenTitle">Open the till</h2>
+          <p class="muted" id="posOpenHint">Count the cash in the drawer before the first sale. This is the opening float.</p>
+          <div class="pos-open-row">
+            <label>Opening float (R) <input type="number" id="posFloatIn" min="0" step="0.01" inputmode="decimal"></label>
+            <button type="button" class="btn-primary" id="posOpenBtn">Open till</button>
+          </div>
+          <p class="error-text" id="posOpenError"></p>
+        </div>
+        <div class="pos-open-panel" id="posStalePanel" hidden>
+          <h2>Yesterday's till is still open</h2>
+          <p class="muted" id="posStaleHint"></p>
+          <button type="button" class="btn-primary pos-inline-btn" id="posStaleClose">Close it now</button>
+        </div>
+        <div class="pos-grid" id="posSellGrid">
           <div class="pos-left">
             <div id="posCats" class="pos-cats"></div>
             <button type="button" class="link-btn pos-custom-btn" id="posCustomBtn">+ Something not in the list</button>
@@ -512,7 +531,14 @@
             </div>
           </div>
         </div>
-        <h2>Today on this till</h2>
+        <div class="pos-recent-head">
+          <h2>Today on this till</h2>
+          <div class="pos-recent-btns">
+            <button type="button" class="btn-secondary" id="posFindBtn">Find receipt / refund</button>
+            <button type="button" class="btn-secondary" id="posCloseTillBtn" hidden>Close till</button>
+          </div>
+        </div>
+        <p class="muted pos-session-line" id="posSessionLine"></p>
         <div id="posRecent" class="fin-lines"></div>
       </div>
 
@@ -1217,6 +1243,23 @@
         <button type="button" class="btn-secondary" id="plRemove" hidden>Remove</button>
         <button type="button" class="btn-primary" id="plSave">Add to sale</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── TILL: FIND A RECEIPT / REFUND ───────────────────────── -->
+<div id="posReceiptBackdrop" class="modal-backdrop pos-modal" hidden>
+  <div class="modal job-modal asset-detail-modal" role="dialog" aria-modal="true" aria-labelledby="posReceiptTitle">
+    <div class="modal-head">
+      <h2 id="posReceiptTitle" style="margin:0;">Find a receipt</h2>
+      <button type="button" class="modal-close" id="posReceiptClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="pos-find-row" id="posFindRow">
+        <input type="search" id="posFindIn" placeholder="Receipt number, e.g. 124 or LAN-T1-000124" inputmode="search">
+        <button type="button" class="btn-primary" id="posFindGo">Find</button>
+      </div>
+      <div id="posReceiptBody"></div>
     </div>
   </div>
 </div>
