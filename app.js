@@ -122,7 +122,7 @@ async function fetchWithRetry(doFetch, attempts) {
 // ─────────────────────────────────────────────────────────────────────
 
 const views = ['auth', 'signincode', 'devlogin', 'pending', 'rejected', 'inactive', 'manager', 'shopexp', 'submitted', 'admin',
-  'backoffice', 'deliveries', 'hoexp', 'assets', 'downloads', 'developer', 'nopages', 'loading'];
+  'backoffice', 'deliveries', 'hoexp', 'till', 'assets', 'downloads', 'developer', 'nopages', 'loading'];
 const NAVLESS_VIEWS = ['auth', 'signincode', 'devlogin', 'pending', 'rejected', 'inactive', 'nopages', 'loading'];
 function showView(name) {
   views.forEach((v) => {
@@ -137,6 +137,7 @@ let currentUser = null; // { email, fullName, role, branch }
 document.getElementById('switchUserBtn').addEventListener('click', () => {
   stopBell();
   finSetup = null;
+  posCfg = null; posTab = 'sell'; posSale = { lines: [], method: 'Cash' };
   assetData = null; assetTab = 'overview';
   if (getDevToken()) { apiPost('devLogout', {}); setDevToken(''); }
   if (getSessionToken()) { apiPost('signOut', {}); setSessionToken(''); }
@@ -169,6 +170,19 @@ async function routeForEmail(email) {
   showView('loading');
   const result = await apiGet('checkUser', { email: email });
   const viewing = !!getViewAs();
+  // No internet? A device that has used the till can still open it.
+  if (!result.success && result.networkError && !viewing) {
+    const off = posRead('pos_offline_user', null);
+    if (off && normEmailClient(off.email) === normEmailClient(email) && off.features && off.features.pos) {
+      currentUser = off;
+      document.getElementById('whoami').textContent = off.fullName + ' (offline)';
+      document.getElementById('switchUserBtn').hidden = false;
+      buildNav();
+      openPage('till');
+      showPosError('No internet — the till still works. Sales are kept on this device and sent when you\'re back online. Reload the page then to use the rest of the app.');
+      return;
+    }
+  }
   if (!result.success) {
     if (result.viewAsEnded) return; // handled by checkDevSession (reloads)
     showAuthError(result.error || 'Something went wrong.');
@@ -261,15 +275,16 @@ const PAGES = {
   backoffice:  { label: 'Submissions' },
   deliveries:  { label: 'Deliveries', feature: 'deliveries' },
   hoexp:       { label: 'Head Office Finance', feature: 'hoExpenses' },
+  till:        { label: 'Till', feature: 'pos' },
   assets:      { label: 'Assets', feature: 'assets' },
   downloads:   { label: 'Downloads', feature: 'downloads' },
   developer:   { label: 'Developer' }
 };
 const ROLE_PAGES = {
-  Manager:    ['cashup', 'shopexp', 'deliveries', 'assets'],
-  BackOffice: ['backoffice', 'deliveries', 'hoexp', 'assets', 'downloads'],
-  Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'assets', 'downloads'],
-  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'assets', 'downloads', 'developer'],
+  Manager:    ['till', 'cashup', 'shopexp', 'deliveries', 'assets'],
+  BackOffice: ['backoffice', 'deliveries', 'hoexp', 'till', 'assets', 'downloads'],
+  Admin:      ['approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'till', 'assets', 'downloads'],
+  Developer:  ['cashup', 'shopexp', 'approvals', 'submissions', 'dashboard', 'deliveries', 'hoexp', 'till', 'assets', 'downloads', 'developer'],
   Driver:     ['deliveries']
 };
 const ROLE_HOME = { Manager: 'cashup', BackOffice: 'backoffice', Admin: 'approvals', Developer: 'approvals', Driver: 'deliveries' };
@@ -304,7 +319,7 @@ function openPage(page) {
   document.querySelectorAll('#appNav .app-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
   const activeBtn = document.querySelector('#appNav .app-nav-btn.active');
   if (activeBtn && activeBtn.scrollIntoView) activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  if (page !== 'approvals' && page !== 'dashboard') document.body.classList.toggle('wide-admin', page === 'assets');
+  if (page !== 'approvals' && page !== 'dashboard') document.body.classList.toggle('wide-admin', page === 'assets' || page === 'till');
 
   switch (page) {
     case 'cashup':
@@ -332,6 +347,10 @@ function openPage(page) {
     case 'hoexp':
       showView('hoexp');
       loadFinancePage();
+      break;
+    case 'till':
+      showView('till');
+      loadTillPage();
       break;
     case 'assets':
       showView('assets');
@@ -5288,6 +5307,805 @@ async function saveAssetCategory() {
     if (id === 'assetDetailBackdrop') el(id).addEventListener('click', (e) => { if (e.target.id === id) closeAssetDetail(); });
     else guardModalBackdrop(id);
   });
+})();
+
+// ─────────────────────────────────────────────────────────────────────
+// TILL / POINT OF SALE (Pro feature "pos") — Phase 1
+//
+// Every sale is saved on this device first (localStorage) and a receipt can
+// print straight away; a background sync sends the queue to the server and
+// clears what it accepted. So the till keeps selling when the internet or
+// Google is slow or down. Receipt numbers are made here: BRANCH-T<till>-n.
+// ─────────────────────────────────────────────────────────────────────
+
+let posCfg = null;          // posConfig response (or the cached copy when offline)
+let posTab = 'sell';
+let posSale = { lines: [], method: 'Cash' };
+let posEditing = -1;        // line index being edited, or -1 for a new line
+let posEditCat = null;      // category of the line editor
+let posSyncing = false;
+let posSyncTimer = null;
+let posOffline = false;
+let posLastDone = null;     // the sale just completed (for Print receipt)
+let posPin = '';
+let posDialogOk = null;
+let posSheetData = null;
+
+function posKey(name) { return 'pos_' + name + ':' + (currentUser ? normEmailClient(currentUser.email) : ''); }
+function normEmailClient(e) { return String(e || '').trim().toLowerCase(); }
+function posRead(name, fallback) {
+  try { const v = localStorage.getItem(name); return v ? JSON.parse(v) : fallback; } catch (e) { return fallback; }
+}
+function posWrite(name, value) {
+  try { localStorage.setItem(name, JSON.stringify(value)); return true; } catch (e) { return false; }
+}
+function posDevice() {
+  return Object.assign({ till: 1, autoPrint: false, mode: 'auto', paper: 80 }, posRead('pos_device', {}));
+}
+function posQueue() { return posRead(posKey('queue'), []); }
+function posSetQueue(q) {
+  if (!posWrite(posKey('queue'), q)) showPosError('This device is out of storage space. Sales can\'t be saved until it has synced — check the internet connection.');
+}
+function posRecent() { return posRead(posKey('recent'), []); }
+function posSetRecent(list) { posWrite(posKey('recent'), list.slice(0, 200)); }
+function posBranchNow() { return posCfg ? posCfg.branch : ''; }
+function posNowString(d) {
+  d = d || new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function posUid() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 's' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+}
+function posMoney(n) { return Math.round(Number(n || 0) * 100) / 100; }
+function showPosError(msg) {
+  const el = document.getElementById('posError');
+  el.textContent = msg || ''; el.hidden = !msg;
+}
+
+// ── Loading ─────────────────────────────────────────────────────────
+
+async function loadTillPage(wantedBranch) {
+  applyPosMode();
+  const cached = posRead(posKey('cfg'), null);
+  const branch = wantedBranch || (cached && cached.branch) || '';
+  if (!posCfg && cached) posCfg = cached;
+  document.getElementById('posLoading').hidden = !!posCfg;
+  if (posCfg) renderTill();
+  const res = await apiGet('posConfig', { email: currentUser.email, branch: branch });
+  if (!res.success) {
+    if (res.networkError && posCfg) { posOffline = true; renderPosSync(); return; }
+    document.getElementById('posLoading').hidden = true;
+    showPosError(res.error === 'Unknown action' ? 'The till needs the updated Apps Script. Ask a developer to redeploy it.' : (res.error || 'Could not load the till.'));
+    return;
+  }
+  posOffline = false;
+  posCfg = res;
+  posWrite(posKey('cfg'), res);
+  rememberOfflineUser();
+  document.getElementById('posLoading').hidden = true;
+  showPosError('');
+  renderTill();
+  posSyncNow();
+  if (!posSyncTimer) posSyncTimer = setInterval(() => { if (currentPage === 'till') posSyncNow(); }, 30000);
+}
+
+// Lets the till open again without internet (the rest of the app needs it).
+function rememberOfflineUser() {
+  const u = {};
+  ['email', 'fullName', 'role', 'branch', 'status', 'features'].forEach((k) => { u[k] = currentUser[k]; });
+  posWrite('pos_offline_user', u);
+}
+
+function renderTill() {
+  const d = posCfg;
+  const sel = document.getElementById('posBranch');
+  sel.hidden = !d.canSell || d.branches.length < 2;
+  sel.innerHTML = d.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+  sel.value = d.branch;
+  document.getElementById('posTillChip').textContent = (d.branch ? d.branch + ' · ' : '') + 'Till ' + posDevice().till;
+  document.getElementById('posTillChip').hidden = !d.canSell;
+  document.getElementById('posCashierBtn').hidden = !d.canSell;
+  document.getElementById('posSync').hidden = !d.canSell;
+  document.getElementById('posSellTabBtn').hidden = !d.canSell;
+  document.getElementById('posCashTabBtn').hidden = !d.canCashiers;
+  document.getElementById('posSetTabBtn').hidden = !d.canSell && !d.canManage;
+  if (!d.canSell && (posTab === 'sell' || posTab === 'cashiers')) posTab = 'sheet';
+  renderPosCashier();
+  renderPosSync();
+  showPosTab(posTab);
+}
+
+function showPosTab(tab) {
+  posTab = tab;
+  document.querySelectorAll('#posTabs button').forEach((b) => b.classList.toggle('active', b.dataset.pt === tab));
+  ['sell', 'sheet', 'cashiers', 'settings'].forEach((t) => { document.getElementById('pt-' + t).hidden = t !== tab; });
+  if (tab === 'sell') renderPosSell();
+  else if (tab === 'sheet') loadPosSheet();
+  else if (tab === 'cashiers') loadPosCashiers();
+  else renderPosSettings();
+}
+
+function applyPosMode() {
+  const mode = posDevice().mode;
+  document.body.classList.toggle('pos-touch', mode === 'touch');
+  document.body.classList.toggle('pos-desktop', mode === 'desktop');
+}
+
+// ── Cashier ─────────────────────────────────────────────────────────
+
+function posCashier() {
+  const c = posRead(posKey('cashier'), null);
+  if (c && c.branch === posBranchNow() && (!c.id || posCfg.cashiers.some((x) => x.id === c.id))) return c;
+  return { id: '', name: posCfg && posCfg.me ? posCfg.me.name : currentUser.fullName, branch: posBranchNow() };
+}
+function renderPosCashier() {
+  document.getElementById('posCashierBtn').textContent = 'Cashier: ' + posCashier().name;
+}
+function openPosPin() {
+  posPin = '';
+  document.getElementById('posPinError').textContent = '';
+  document.getElementById('posPinHint').textContent = posCfg.cashiers.length ? 'Enter your 4-digit till PIN.' : 'No cashier PINs are set up for this branch yet (see the Cashiers tab).';
+  document.getElementById('posPinMe').textContent = 'Use ' + (posCfg.me ? posCfg.me.name : 'my own name') + ' (signed in)';
+  document.getElementById('posPinPad').innerHTML = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫']
+    .map((k) => '<button type="button" data-pin="' + k + '">' + k + '</button>').join('');
+  renderPinDots();
+  document.getElementById('posPinBackdrop').hidden = false;
+}
+function renderPinDots() {
+  document.querySelectorAll('#posPinDots span').forEach((s, i) => s.classList.toggle('on', i < posPin.length));
+}
+async function posSha256(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function pinKey(k) {
+  if (k === 'C') posPin = '';
+  else if (k === '⌫') posPin = posPin.slice(0, -1);
+  else if (posPin.length < 4) posPin += k;
+  renderPinDots();
+  document.getElementById('posPinError').textContent = '';
+  if (posPin.length < 4) return;
+  const pin = posPin;
+  let match = null;
+  for (const c of posCfg.cashiers) { if ((await posSha256(c.salt + ':' + pin)) === c.hash) { match = c; break; } }
+  posPin = '';
+  renderPinDots();
+  if (!match) { document.getElementById('posPinError').textContent = 'That PIN is not right. Try again.'; return; }
+  posWrite(posKey('cashier'), { id: match.id, name: match.name, branch: posBranchNow() });
+  document.getElementById('posPinBackdrop').hidden = true;
+  renderPosCashier();
+}
+
+// ── Selling ─────────────────────────────────────────────────────────
+
+function renderPosSell() {
+  const cats = posCfg.categories.filter((c) => c.active);
+  document.getElementById('posCats').innerHTML = cats.map((c) =>
+    '<button type="button" class="pos-cat" data-cat="' + escapeAttr(c.id) + '"><span class="pos-cat-name">' + escapeHtml(c.name) + '</span>' +
+    (c.defaultPrice !== null ? '<span class="pos-cat-price">' + rand(c.defaultPrice) + '</span>' : '') + '</button>').join('');
+  document.getElementById('posMethods').innerHTML = posCfg.methods.map((m) =>
+    '<button type="button" class="pos-method' + (posSale.method === m ? ' is-on' : '') + '" data-method="' + escapeAttr(m) + '">' + escapeHtml(m) + '</button>').join('');
+  renderPosSale();
+  renderPosRecent();
+}
+
+function posSaleTotal() { return posMoney(posSale.lines.reduce((t, l) => t + posMoney(l.qty * l.price), 0)); }
+
+function renderPosSale() {
+  const total = posSaleTotal();
+  const items = posSale.lines.reduce((t, l) => t + l.qty, 0);
+  document.getElementById('posLines').innerHTML = posSale.lines.length ? posSale.lines.map((l, i) =>
+    '<button type="button" class="pos-line" data-line="' + i + '"><span class="pos-line-desc"><strong>' + l.qty + ' × ' + escapeHtml(l.categoryName) + '</strong>' +
+    (l.description ? '<span class="muted">' + escapeHtml(l.description) + '</span>' : '') + '<span class="muted">@ ' + rand(l.price) + '</span></span>' +
+    '<span class="pos-line-amt">' + rand(posMoney(l.qty * l.price)) + '</span></button>').join('')
+    : '<p class="muted pos-empty">Tap a category to add an item.</p>';
+  document.getElementById('posItemCount').textContent = items;
+  document.getElementById('posItemWord').textContent = items === 1 ? 'item' : 'items';
+  document.getElementById('posTotal').textContent = rand(total);
+  document.getElementById('posClearBtn').hidden = !posSale.lines.length;
+  document.querySelectorAll('#posMethods .pos-method').forEach((b) => b.classList.toggle('is-on', b.dataset.method === posSale.method));
+  const cash = posSale.method === 'Cash';
+  document.getElementById('posCashBox').hidden = !cash;
+  if (cash) {
+    const notes = [10, 20, 50, 100, 200, 500].filter((n) => n > total).slice(0, 3);
+    document.getElementById('posQuick').innerHTML = '<button type="button" data-cash="exact">Exact</button>' +
+      notes.map((n) => '<button type="button" data-cash="' + n + '">R' + n + '</button>').join('');
+  }
+  updatePosChange();
+}
+
+function updatePosChange() {
+  const total = posSaleTotal();
+  const raw = document.getElementById('posCashIn').value;
+  const cash = raw === '' ? total : posMoney(raw);
+  const short = posSale.method === 'Cash' && raw !== '' && cash < total;
+  document.getElementById('posChange').textContent = short ? 'R ' + (total - cash).toFixed(2) + ' short' : rand(Math.max(0, cash - total));
+  document.getElementById('posChange').classList.toggle('is-short', short);
+  document.getElementById('posComplete').disabled = !posSale.lines.length || short;
+  document.getElementById('posComplete').textContent = posSale.lines.length ? 'Complete sale · ' + rand(total) : 'Complete sale';
+}
+
+function openPosLine(catId, index) {
+  posEditing = index === undefined ? -1 : index;
+  const line = posEditing >= 0 ? posSale.lines[posEditing] : null;
+  const cat = line ? posCfg.categories.filter((c) => c.id === line.categoryId)[0] || null : posCfg.categories.filter((c) => c.id === catId)[0] || null;
+  posEditCat = cat;
+  const other = !cat || /^other$/i.test(cat.name);
+  document.getElementById('posLineTitle').textContent = cat ? cat.name : 'Something else';
+  document.getElementById('plQty').value = line ? line.qty : 1;
+  document.getElementById('plPrice').value = line ? line.price : (cat && cat.defaultPrice !== null ? cat.defaultPrice : '');
+  document.getElementById('plDesc').value = line ? line.description : '';
+  document.getElementById('plDescLabel').textContent = other ? 'What is it?' : 'Description (optional)';
+  document.getElementById('plRemove').hidden = !line;
+  document.getElementById('plSave').textContent = line ? 'Update' : 'Add to sale';
+  document.getElementById('plError').textContent = '';
+  updatePosLineTotal();
+  document.getElementById('posLineBackdrop').hidden = false;
+  const focusEl = document.getElementById(other && !line ? 'plDesc' : 'plPrice');
+  focusEl.focus();
+  if (focusEl.select) focusEl.select();
+}
+
+function updatePosLineTotal() {
+  const q = Number(document.getElementById('plQty').value) || 0;
+  const p = Number(document.getElementById('plPrice').value) || 0;
+  document.getElementById('plTotal').textContent = rand(posMoney(q * p));
+}
+
+function savePosLine() {
+  const err = document.getElementById('plError');
+  const qty = Number(document.getElementById('plQty').value);
+  const priceRaw = document.getElementById('plPrice').value;
+  const price = posMoney(priceRaw);
+  const description = document.getElementById('plDesc').value.trim();
+  const other = !posEditCat || /^other$/i.test(posEditCat.name);
+  if (!(qty >= 1 && qty <= 999 && Math.round(qty) === qty)) { err.textContent = 'Quantity must be a whole number from 1 to 999.'; return; }
+  if (priceRaw === '' || !(price >= 0 && price <= 1000000)) { err.textContent = 'Enter the price for one item.'; return; }
+  if (other && !description) { err.textContent = 'Say what it is, e.g. "Defy fridge".'; return; }
+  const line = { categoryId: posEditCat ? posEditCat.id : '', categoryName: posEditCat ? posEditCat.name : 'Other', qty: qty, price: price, description: description };
+  if (posEditing >= 0) posSale.lines[posEditing] = line; else posSale.lines.push(line);
+  document.getElementById('posLineBackdrop').hidden = true;
+  posHideDone();
+  renderPosSale();
+}
+
+function posHideDone() {
+  document.getElementById('posDone').hidden = true;
+  document.querySelector('.pos-sale').hidden = false;
+}
+
+async function completePosSale() {
+  const err = document.getElementById('posSaleError');
+  err.textContent = '';
+  if (!posSale.lines.length) return;
+  const total = posSaleTotal();
+  const cashRaw = document.getElementById('posCashIn').value;
+  const cash = posSale.method === 'Cash' ? (cashRaw === '' ? total : posMoney(cashRaw)) : null;
+  if (cash !== null && cash < total) { err.textContent = 'Cash received is less than the total.'; return; }
+  const dev = posDevice();
+  const branch = posBranchNow();
+  const code = posCfg.codes[branch] || 'BR';
+  const seqKey = 'pos_seq:' + branch + ':' + dev.till;
+  const seq = Math.max(Number(posRead(seqKey, 0)) || 0, Number((posCfg.lastSeq || {})[String(dev.till)]) || 0) + 1;
+  const cashier = posCashier();
+  const sale = {
+    uid: posUid(), receiptNo: code + '-T' + dev.till + '-' + String(seq).padStart(6, '0'), till: dev.till, time: posNowString(),
+    cashierId: cashier.id, cashierName: cashier.name, method: posSale.method, total: total,
+    cashReceived: cash, change: cash !== null ? posMoney(cash - total) : null,
+    lines: posSale.lines.map((l) => ({ categoryId: l.categoryId, categoryName: l.categoryName, qty: l.qty, price: l.price, description: l.description }))
+  };
+  const q = posQueue();
+  q.push({ opId: 'o-' + sale.uid, type: 'sale', branch: branch, sale: sale });
+  posSetQueue(q);
+  posWrite(seqKey, seq);
+  const recent = posRecent();
+  recent.unshift(Object.assign({ branch: branch, status: 'Completed', sent: false }, sale));
+  posSetRecent(recent);
+  posLastDone = Object.assign({ branch: branch }, sale);
+  posSale = { lines: [], method: 'Cash' };
+  document.getElementById('posCashIn').value = '';
+  document.querySelector('.pos-sale').hidden = true;
+  document.getElementById('posDone').hidden = false;
+  document.getElementById('posDoneChange').textContent = sale.change !== null && sale.change > 0 ? 'Change: ' + rand(sale.change) : rand(total) + ' · ' + sale.method;
+  document.getElementById('posDoneRef').textContent = sale.receiptNo + ' · ' + sale.cashierName;
+  renderPosSale();
+  renderPosRecent();
+  if (dev.autoPrint) printPosReceipt(posLastDone, false);
+  setTimeout(() => document.getElementById('posNewSale').focus(), 30);
+  posSyncNow();
+}
+
+function renderPosRecent() {
+  const today = posNowString().slice(0, 10);
+  const branch = posBranchNow();
+  const list = posRecent().filter((s) => s.branch === branch && s.time.slice(0, 10) === today);
+  const totals = list.filter((s) => s.status !== 'Cancelled').reduce((t, s) => t + s.total, 0);
+  document.getElementById('posRecent').innerHTML = list.length ? '<p class="muted pos-recent-sum">' + list.length + ' sale' + (list.length === 1 ? '' : 's') + ' · ' + rand(totals) + ' (not counting cancelled)</p>' +
+    list.map((s) => '<div class="fin-line' + (s.status === 'Cancelled' ? ' pos-cancelled' : '') + '"><span class="fin-line-main">' +
+      '<span class="fin-line-desc">' + escapeHtml(s.time.slice(11, 16)) + ' · ' + escapeHtml(s.receiptNo) + ' · ' + escapeHtml(s.lines.map((l) => l.qty + '× ' + (l.description || l.categoryName)).join(', ')) + '</span>' +
+      '<span class="fin-line-meta">' + escapeHtml(s.method) + ' · ' + escapeHtml(s.cashierName) + ' · ' + (s.sent ? 'sent' : '<strong>waiting to send</strong>') +
+      (s.status === 'Cancelled' ? ' · cancelled: ' + escapeHtml(s.cancelReason || '') : '') + '</span></span>' +
+      '<span class="fin-line-side"><span class="fin-line-amt">' + rand(s.total) + '</span>' +
+      '<button type="button" class="link-btn" data-reprint="' + escapeAttr(s.uid) + '">Reprint</button>' +
+      (s.status !== 'Cancelled' ? '<button type="button" class="link-btn asset-file-rm" data-void="' + escapeAttr(s.uid) + '">Cancel sale</button>' : '') +
+      '</span></div>').join('') : '<p class="muted">No sales on this till yet today.</p>';
+}
+
+function openPosVoid(uid) {
+  const s = posRecent().filter((x) => x.uid === uid)[0];
+  if (!s) return;
+  openPosDialog({
+    title: 'Cancel sale', sub: s.receiptNo + ' · ' + rand(s.total) + ' · ' + s.method,
+    body: '<p class="muted">The sale stays on record, marked as cancelled, and is left out of the totals. ' +
+      (s.method === 'Cash' ? 'Give back the ' + rand(s.total) + ' cash if the customer paid.' : 'Reverse the card payment on the card machine if needed.') + '</p>' +
+      '<label>Reason <input type="text" id="pdReason" maxlength="300" placeholder="e.g. rang up twice, customer changed mind"></label>',
+    ok: 'Cancel sale',
+    onOk: () => {
+      const reason = document.getElementById('pdReason').value.trim();
+      if (!reason) return 'Give a reason.';
+      const q = posQueue();
+      q.push({ opId: 'v-' + uid, type: 'void', branch: s.branch, uid: uid, reason: reason, at: posNowString(), by: posCashier().name });
+      posSetQueue(q);
+      posSetRecent(posRecent().map((x) => (x.uid === uid ? Object.assign(x, { status: 'Cancelled', cancelReason: reason }) : x)));
+      renderPosRecent();
+      posSyncNow();
+      return '';
+    }
+  });
+}
+
+// ── Sync ────────────────────────────────────────────────────────────
+
+function renderPosSync() {
+  const el = document.getElementById('posSync');
+  if (!el) return;
+  const n = posQueue().length;
+  el.classList.toggle('is-wait', n > 0);
+  el.classList.toggle('is-off', posOffline);
+  el.textContent = posOffline ? (n ? 'Offline · ' + n + ' waiting' : 'Offline') : (n ? n + ' waiting to send' : 'All sent ✓');
+  const rej = posRead(posKey('rejected'), []);
+  if (rej.length) showPosError(rej.length + ' sale change' + (rej.length === 1 ? ' was' : 's were') + ' not accepted: ' + rej.slice(-1)[0].error + ' (ask a developer to check).');
+}
+
+async function posSyncNow() {
+  if (posSyncing || !posCfg || !posCfg.canSell) { renderPosSync(); return; }
+  let q = posQueue();
+  if (!q.length) { renderPosSync(); return; }
+  posSyncing = true;
+  try {
+    while (q.length) {
+      const branch = q[0].branch;
+      const batch = q.filter((op) => op.branch === branch).slice(0, 40);
+      const res = await apiPost('posSync', { requesterEmail: currentUser.email, branch: branch,
+        ops: batch.map((op) => Object.assign({}, op, { branch: undefined })) });
+      if (!res.success) { posOffline = !!res.networkError; if (!res.networkError) showPosError(res.error || 'Could not send sales.'); break; }
+      posOffline = false;
+      const done = {}; (res.done || []).forEach((id) => { done[id] = true; });
+      const bad = {}; (res.rejected || []).forEach((r) => { bad[r.opId] = r.error; });
+      if (Object.keys(bad).length) posWrite(posKey('rejected'), posRead(posKey('rejected'), []).concat(batch.filter((op) => bad[op.opId]).map((op) => ({ op: op, error: bad[op.opId] }))));
+      const sentUids = {};
+      batch.forEach((op) => { if (done[op.opId] && op.type === 'sale') sentUids[op.sale.uid] = true; });
+      q = posQueue().filter((op) => !done[op.opId] && !bad[op.opId]);
+      posSetQueue(q);
+      posSetRecent(posRecent().map((s) => (sentUids[s.uid] ? Object.assign(s, { sent: true }) : s)));
+      if (!(res.done || []).length && !(res.rejected || []).length) break;
+    }
+  } finally {
+    posSyncing = false;
+    renderPosSync();
+    if (posTab === 'sell' && currentPage === 'till') renderPosRecent();
+  }
+}
+
+// ── Receipts ────────────────────────────────────────────────────────
+
+function posReceiptHtml(sale, copy) {
+  const e = escapeHtml;
+  const dev = posDevice();
+  const w = dev.paper === 58 ? 48 : 72; // printable width in mm
+  const logo = new URL('assets/logo.jpg', location.href).href;
+  const rc = posCfg.receipt || {};
+  const money = (v) => 'R' + Number(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const lines = sale.lines.map((l) => '<tr><td colspan="2">' + e(l.qty + ' × ' + (l.description ? l.categoryName + ' – ' + l.description : l.categoryName)) + '</td></tr>' +
+    '<tr><td class="sm">@ ' + money(l.price) + '</td><td class="r">' + money(posMoney(l.qty * l.price)) + '</td></tr>').join('');
+  return '<!doctype html><html><head><meta charset="utf-8"><title>' + e(sale.receiptNo) + '</title><style>' +
+    '@page{size:' + (dev.paper === 58 ? 58 : 80) + 'mm auto;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0}' +
+    'body{width:' + w + 'mm;margin:0 auto;padding:3mm 0 6mm;font-family:Arial,Helvetica,sans-serif;font-size:11.5px;color:#000}' +
+    '.c{text-align:center}.r{text-align:right;white-space:nowrap}.sm{font-size:10px;padding-left:3mm}img{display:block;margin:0 auto 2mm;max-width:38mm;max-height:16mm;filter:grayscale(1)}' +
+    'h1{font-size:13px;margin:0}.hd{white-space:pre-line;font-size:10.5px}hr{border:0;border-top:1px dashed #000;margin:2mm 0}' +
+    'table{width:100%;border-collapse:collapse}td{padding:0.4mm 0;vertical-align:top}.tot td{font-size:15px;font-weight:bold;padding-top:1mm}' +
+    '.copy{border:1.5px solid #000;text-align:center;font-weight:bold;padding:1mm;margin-bottom:2mm}.ft{white-space:pre-line;font-size:10.5px}' +
+    '.void{border:2px solid #000;text-align:center;font-weight:bold;font-size:14px;padding:1mm;margin:2mm 0}</style></head><body>' +
+    (copy ? '<div class="copy">COPY — REPRINTED</div>' : '') +
+    '<img src="' + e(logo) + '" alt=""><div class="c hd"><h1>' + e((rc.header || '').split('\n')[0]) + '</h1>' + e((rc.header || '').split('\n').slice(1).join('\n')) + '</div>' +
+    '<div class="c">' + e(sale.branch || posBranchNow()) + '</div><hr>' +
+    '<table><tr><td>Receipt</td><td class="r">' + e(sale.receiptNo) + '</td></tr><tr><td>Date</td><td class="r">' + e(assetWhen(sale.time.slice(0, 16))) + '</td></tr>' +
+    '<tr><td>Cashier</td><td class="r">' + e(sale.cashierName) + '</td></tr></table><hr>' +
+    '<table>' + lines + '</table><hr>' +
+    '<table><tr class="tot"><td>TOTAL</td><td class="r">' + money(sale.total) + '</td></tr>' +
+    '<tr><td>Paid by</td><td class="r">' + e(sale.method) + '</td></tr>' +
+    (sale.cashReceived !== null && sale.cashReceived !== undefined ? '<tr><td>Cash received</td><td class="r">' + money(sale.cashReceived) + '</td></tr><tr><td>Change</td><td class="r">' + money(sale.change || 0) + '</td></tr>' : '') +
+    '<tr><td>Items</td><td class="r">' + sale.lines.reduce((t, l) => t + l.qty, 0) + '</td></tr></table>' +
+    (sale.status === 'Cancelled' ? '<div class="void">CANCELLED</div>' : '') + '<hr>' +
+    '<div class="c ft">' + e(rc.footer || '') + '</div></body></html>';
+}
+
+function printPosReceipt(sale, copy) {
+  const frame = document.getElementById('posPrintFrame');
+  frame.onload = () => {
+    frame.onload = null;
+    const img = frame.contentDocument.querySelector('img');
+    const go = () => { try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { /* ignore */ } };
+    if (img && !img.complete) { img.onload = go; img.onerror = go; setTimeout(go, 1500); } else go();
+  };
+  frame.srcdoc = posReceiptHtml(sale, copy);
+}
+
+// ── Daily sales sheet ───────────────────────────────────────────────
+
+async function loadPosSheet() {
+  const d = posCfg;
+  const bsel = document.getElementById('posSheetBranch');
+  const branches = d.branches;
+  if (!bsel.options.length) {
+    bsel.innerHTML = branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join('');
+    bsel.value = d.branch || branches[0];
+  }
+  document.getElementById('posSheetBranchWrap').hidden = branches.length < 2;
+  const dateIn = document.getElementById('posSheetDate');
+  if (!dateIn.value) dateIn.value = d.today || posNowString().slice(0, 10);
+  const body = document.getElementById('posSheetBody');
+  body.innerHTML = '<p class="muted">Loading…</p>';
+  const branch = bsel.value, date = dateIn.value;
+  const res = await apiGet('posDay', { email: currentUser.email, branch: branch, date: date });
+  if (bsel.value !== branch || dateIn.value !== date) return;
+  // Sales on this device that haven't reached the server yet are shown too.
+  const known = {};
+  const sales = res.success ? res.sales.slice() : [];
+  sales.forEach((s) => { known[s.uid] = s; });
+  const local = posRecent().filter((s) => s.branch === branch && s.time.slice(0, 10) === date);
+  local.forEach((s) => {
+    if (known[s.uid]) { if (s.status === 'Cancelled' && known[s.uid].status !== 'Cancelled') Object.assign(known[s.uid], { status: 'Cancelled', cancelReason: s.cancelReason, pending: true }); return; }
+    sales.push(Object.assign({}, s, { pending: true, lines: s.lines.map((l) => ({ category: l.categoryName, description: l.description, qty: l.qty, price: l.price, lineTotal: posMoney(l.qty * l.price) })) }));
+  });
+  if (!res.success && !local.length) {
+    body.innerHTML = '<p class="error-text">' + escapeHtml(res.networkError ? 'You are offline. Only sales made on this device are shown once you reconnect.' : res.error || 'Could not load the sheet.') + '</p>';
+    posSheetData = null;
+    return;
+  }
+  sales.sort((a, b) => (a.time < b.time ? -1 : 1));
+  posSheetData = { branch: branch, date: date, sales: sales, offline: !res.success };
+  body.innerHTML = posSheetHtml(posSheetData, false);
+}
+
+function posSheetSummary(data) {
+  const live = data.sales.filter((s) => s.status !== 'Cancelled');
+  const sum = { total: 0, items: 0, sales: live.length, methods: {}, cats: {}, cancelled: data.sales.length - live.length, cancelledValue: 0 };
+  live.forEach((s) => {
+    sum.total += s.total; sum.methods[s.method] = (sum.methods[s.method] || 0) + s.total;
+    s.lines.forEach((l) => { sum.items += l.qty; const k = l.category || 'Other'; sum.cats[k] = sum.cats[k] || { qty: 0, amt: 0 }; sum.cats[k].qty += l.qty; sum.cats[k].amt += l.lineTotal; });
+  });
+  data.sales.filter((s) => s.status === 'Cancelled').forEach((s) => { sum.cancelledValue += s.total; });
+  sum.total = posMoney(sum.total);
+  return sum;
+}
+
+function posSheetHtml(data, forPrint) {
+  const e = escapeHtml;
+  const sum = posSheetSummary(data);
+  const rows = [];
+  data.sales.forEach((s) => s.lines.forEach((l, i) => rows.push('<tr class="' + (s.status === 'Cancelled' ? 'pos-x' : '') + '">' +
+    '<td class="n">' + l.qty + '</td><td>' + e(l.category + (l.description ? ' – ' + l.description : '')) +
+    (i === 0 && s.status === 'Cancelled' ? ' <em>(cancelled: ' + e(s.cancelReason || '') + ')</em>' : '') + '</td>' +
+    '<td>' + e(s.time.slice(11, 16)) + '</td><td class="n">' + rand(l.lineTotal) + '</td>' +
+    '<td class="sm">' + (i === 0 ? e(s.receiptNo) + (s.pending ? ' *' : '') : '') + '</td><td class="sm">' + (i === 0 ? e(s.method) : '') + '</td>' +
+    '<td class="sm">' + (i === 0 ? e(s.cashierName) : '') + '</td></tr>')));
+  const methods = Object.keys(sum.methods).map((m) => '<tr><td>' + e(m) + '</td><td class="n">' + rand(sum.methods[m]) + '</td></tr>').join('');
+  const cats = Object.keys(sum.cats).sort((a, b) => sum.cats[b].amt - sum.cats[a].amt)
+    .map((k) => '<tr><td>' + e(k) + '</td><td class="n">' + sum.cats[k].qty + '</td><td class="n">' + rand(sum.cats[k].amt) + '</td></tr>').join('');
+  return (forPrint ? '' : '<p class="muted">' + e(data.branch) + ' · ' + e(assetWhen(data.date)) + (data.offline ? ' · <strong>offline — showing this device only</strong>' : '') + '</p>') +
+    '<div class="fin-kpis pos-kpis"><div class="kpi-card"><span class="kpi-label">Daily sales total</span><span class="kpi-value">' + rand(sum.total) + '</span></div>' +
+    '<div class="kpi-card"><span class="kpi-label">Items sold</span><span class="kpi-value">' + sum.items + '</span></div>' +
+    '<div class="kpi-card"><span class="kpi-label">Sales</span><span class="kpi-value">' + sum.sales + '</span></div></div>' +
+    (rows.length ? '<div class="pos-sheet-wrap"><table class="pos-sheet"><thead><tr><th class="n">Qty</th><th>Description</th><th>Time</th><th class="n">Amount</th><th>Receipt</th><th>Paid</th><th>Cashier</th></tr></thead><tbody>' +
+      rows.join('') + '</tbody><tfoot><tr><td class="n">' + sum.items + '</td><td>Total</td><td></td><td class="n">' + rand(sum.total) + '</td><td colspan="3"></td></tr></tfoot></table></div>'
+      : '<p class="muted">No sales on this day.</p>') +
+    (rows.length ? '<div class="pos-sheet-cols"><div><h3>By payment</h3><table class="pos-mini">' + methods + '</table>' +
+      (sum.cancelled ? '<p class="muted">' + sum.cancelled + ' cancelled sale' + (sum.cancelled === 1 ? '' : 's') + ' (' + rand(sum.cancelledValue) + ') not counted.</p>' : '') + '</div>' +
+      '<div><h3>By category</h3><table class="pos-mini"><tr><th>Category</th><th class="n">Qty</th><th class="n">Amount</th></tr>' + cats + '</table></div></div>' : '') +
+    (data.sales.some((s) => s.pending) ? '<p class="muted">* still on this device, waiting to be sent.</p>' : '');
+}
+
+function printPosSheet() {
+  if (!posSheetData) return;
+  const sub = posSheetData.branch + ' · ' + assetWhen(posSheetData.date);
+  openReportViewer('Daily sales sheet', sub, assetPrintDoc('Daily sales sheet', sub,
+    '<style>.pos-x td{text-decoration:line-through;color:#888}.n{text-align:right;white-space:nowrap}.sm{font-size:10px;color:#5e6a7a}' +
+    '.fin-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}.kpi-card{border:1px solid #dfe5ee;border-radius:8px;padding:6px 10px}' +
+    '.kpi-label{display:block;font-size:9.5px;color:#5e6a7a;text-transform:uppercase;font-weight:bold}.kpi-value{font-size:18px;font-weight:bold}' +
+    '.pos-sheet-cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:10px}h3{font-size:11px;color:#0d53af;text-transform:uppercase;margin:8px 0 4px}' +
+    'tfoot td{font-weight:bold;border-top:2px solid #142132}</style>' + posSheetHtml(posSheetData, true) +
+    '<div class="sig"><div>Cashier</div><div>Store Manager</div><div>Date</div></div>'));
+}
+
+async function excelPosSheet() {
+  if (!posSheetData) return;
+  await loadScriptOnce('vendor/xlsx.full.min.js');
+  const aoa = [['Daily sales sheet', posSheetData.branch, posSheetData.date], [], ['Qty', 'Description', 'Time', 'Amount', 'Receipt', 'Payment', 'Cashier', 'Status']];
+  posSheetData.sales.forEach((s) => s.lines.forEach((l) => aoa.push([l.qty, l.category + (l.description ? ' – ' + l.description : ''), s.time.slice(11, 16), l.lineTotal,
+    s.receiptNo, s.method, s.cashierName, s.status === 'Cancelled' ? 'Cancelled: ' + (s.cancelReason || '') : 'Completed'])));
+  const sum = posSheetSummary(posSheetData);
+  aoa.push([], [sum.items, 'Total (excluding cancelled)', '', sum.total]);
+  Object.keys(sum.methods).forEach((m) => aoa.push(['', m, '', posMoney(sum.methods[m])]));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 6 }, { wch: 40 }, { wch: 7 }, { wch: 11 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 28 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Sales sheet');
+  XLSX.writeFile(wb, 'Sales_' + posSheetData.branch.replace(/\W+/g, '_') + '_' + posSheetData.date + '.xlsx');
+}
+
+// ── Cashiers ────────────────────────────────────────────────────────
+
+async function loadPosCashiers() {
+  const d = posCfg;
+  const wrap = document.getElementById('posCashBranchWrap');
+  const sel = document.getElementById('posCashBranch');
+  wrap.hidden = d.branches.length < 2;
+  if (!sel.options.length) { sel.innerHTML = d.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join(''); sel.value = d.branch; }
+  const list = document.getElementById('posCashList');
+  list.innerHTML = '<p class="muted">Loading…</p>';
+  const res = await apiPost('posCashier', { requesterEmail: currentUser.email, op: 'list', branch: sel.value });
+  if (!res.success) { list.innerHTML = '<p class="error-text">' + escapeHtml(res.error || 'Could not load cashiers.') + '</p>'; return; }
+  list.innerHTML = res.cashiers.length ? res.cashiers.map((c) => '<div class="fin-line' + (c.active ? '' : ' pos-cancelled') + '"><span class="fin-line-main">' +
+    '<span class="fin-line-desc">' + escapeHtml(c.name) + (c.active ? '' : ' <span class="status-tag as-gone">Inactive</span>') + '</span>' +
+    '<span class="fin-line-meta">' + (c.email ? 'Staff · ' + escapeHtml(c.email) : 'Volunteer / no app account') + '</span></span>' +
+    '<span class="fin-line-side"><button type="button" class="link-btn" data-cpin="' + escapeAttr(c.id) + '" data-cname="' + escapeAttr(c.name) + '" data-cactive="' + (c.active ? '1' : '0') + '">' + (c.active ? 'New PIN' : 'Bring back') + '</button>' +
+    (c.active ? '<button type="button" class="link-btn asset-file-rm" data-coff="' + escapeAttr(c.id) + '" data-cname="' + escapeAttr(c.name) + '">Remove</button>' : '') + '</span></div>').join('')
+    : '<p class="muted">No cashiers yet. Add the people who work the till below.</p>';
+}
+
+async function addPosCashier() {
+  const err = document.getElementById('pcError');
+  const name = document.getElementById('pcName').value.trim();
+  const pin = document.getElementById('pcPin').value;
+  err.textContent = '';
+  if (!name) { err.textContent = 'Enter the cashier\'s name.'; return; }
+  if (!/^\d{4}$/.test(pin)) { err.textContent = 'The PIN must be 4 digits.'; return; }
+  if (pin !== document.getElementById('pcPin2').value) { err.textContent = 'The two PINs don\'t match.'; return; }
+  const btn = document.getElementById('pcAdd');
+  btn.disabled = true;
+  const res = await apiPost('posCashier', { requesterEmail: currentUser.email, op: 'add', branch: document.getElementById('posCashBranch').value,
+    name: name, email: document.getElementById('pcEmail').value.trim(), pin: pin });
+  btn.disabled = false;
+  if (!res.success) { err.textContent = res.error || 'Could not add the cashier.'; return; }
+  ['pcName', 'pcEmail', 'pcPin', 'pcPin2'].forEach((id) => { document.getElementById(id).value = ''; });
+  await loadPosCashiers();
+  refreshPosConfigQuietly();
+}
+
+function openPosCashierPin(id, name, active) {
+  openPosDialog({
+    title: active ? 'New PIN for ' + name : 'Bring back ' + name, sub: 'They use it to sign in at the till.',
+    body: '<div class="grid-2"><label>New PIN <input type="password" id="pdPin" inputmode="numeric" maxlength="4"></label><label>PIN again <input type="password" id="pdPin2" inputmode="numeric" maxlength="4"></label></div>',
+    ok: 'Save',
+    onOk: async () => {
+      const pin = document.getElementById('pdPin').value;
+      if (!/^\d{4}$/.test(pin)) return 'The PIN must be 4 digits.';
+      if (pin !== document.getElementById('pdPin2').value) return 'The two PINs don\'t match.';
+      const res = await apiPost('posCashier', active ? { requesterEmail: currentUser.email, op: 'pin', id: id, pin: pin }
+        : { requesterEmail: currentUser.email, op: 'active', id: id, active: true, pin: pin });
+      if (!res.success) return res.error || 'Could not save.';
+      loadPosCashiers(); refreshPosConfigQuietly();
+      return '';
+    }
+  });
+}
+
+function openPosCashierOff(id, name) {
+  openPosDialog({
+    title: 'Remove ' + name + '?', sub: 'Their PIN stops working. Their past sales keep their name.', body: '', ok: 'Remove',
+    onOk: async () => {
+      const res = await apiPost('posCashier', { requesterEmail: currentUser.email, op: 'active', id: id, active: false });
+      if (!res.success) return res.error || 'Could not remove.';
+      loadPosCashiers(); refreshPosConfigQuietly();
+      return '';
+    }
+  });
+}
+
+async function refreshPosConfigQuietly() {
+  const res = await apiGet('posConfig', { email: currentUser.email, branch: posBranchNow() });
+  if (res.success) { posCfg = res; posWrite(posKey('cfg'), res); renderPosCashier(); }
+}
+
+// ── Settings ────────────────────────────────────────────────────────
+
+function renderPosSettings() {
+  const dev = posDevice();
+  document.getElementById('psTill').innerHTML = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => '<option value="' + n + '">Till ' + n + '</option>').join('');
+  document.getElementById('psTill').value = dev.till;
+  document.getElementById('psMode').value = dev.mode;
+  document.getElementById('psPaper').value = String(dev.paper);
+  document.getElementById('psAutoPrint').checked = !!dev.autoPrint;
+  const admin = posCfg.canManage;
+  document.getElementById('psAdmin').hidden = !admin;
+  if (!admin) return;
+  document.getElementById('psHeader').value = posCfg.receipt.header || '';
+  document.getElementById('psFooter').value = posCfg.receipt.footer || '';
+  const cats = posCfg.categories;
+  document.getElementById('psCatList').innerHTML = cats.map((c, i) => '<div class="pos-cat-row' + (c.active ? '' : ' is-hidden') + '">' +
+    '<span class="pos-cat-order"><button type="button" class="link-btn" data-cmove="up" data-cid="' + escapeAttr(c.id) + '"' + (i === 0 ? ' disabled' : '') + ' aria-label="Move up">▲</button>' +
+    '<button type="button" class="link-btn" data-cmove="down" data-cid="' + escapeAttr(c.id) + '"' + (i === cats.length - 1 ? ' disabled' : '') + ' aria-label="Move down">▼</button></span>' +
+    '<span class="pos-cat-label">' + escapeHtml(c.name) + (c.active ? '' : ' <span class="status-tag as-gone">Hidden</span>') + '</span>' +
+    '<span class="muted">' + (c.defaultPrice !== null ? rand(c.defaultPrice) : 'no usual price') + '</span>' +
+    '<button type="button" class="link-btn" data-cedit="' + escapeAttr(c.id) + '">Edit</button></div>').join('');
+}
+
+function savePosDevice(patch) {
+  posWrite('pos_device', Object.assign(posDevice(), patch));
+  applyPosMode();
+  if (posCfg) document.getElementById('posTillChip').textContent = (posCfg.branch ? posCfg.branch + ' · ' : '') + 'Till ' + posDevice().till;
+}
+
+async function posCategoryCall(payload, errId) {
+  const err = document.getElementById(errId || 'psCatError');
+  err.textContent = '';
+  const res = await apiPost('posCategory', Object.assign({ requesterEmail: currentUser.email }, payload));
+  if (!res.success) { err.textContent = res.error || 'Could not save.'; return false; }
+  await refreshPosConfigQuietly();
+  renderPosSettings();
+  return true;
+}
+
+function openPosCategoryEdit(id) {
+  const c = posCfg.categories.filter((x) => x.id === id)[0];
+  openPosDialog({
+    title: 'Edit category', sub: c.name,
+    body: '<label>Name <input type="text" id="pdCatName" maxlength="40" value="' + escapeAttr(c.name) + '"></label>' +
+      '<label>Usual price (R, optional) <input type="number" id="pdCatPrice" min="0" step="0.01" value="' + (c.defaultPrice !== null ? c.defaultPrice : '') + '"></label>' +
+      '<label class="fin-check"><input type="checkbox" id="pdCatActive"' + (c.active ? ' checked' : '') + '> Show on the till</label>',
+    ok: 'Save',
+    onOk: async () => {
+      const ok = await posCategoryCall({ op: 'update', id: id, name: document.getElementById('pdCatName').value, defaultPrice: document.getElementById('pdCatPrice').value,
+        active: document.getElementById('pdCatActive').checked }, 'posDialogError');
+      return ok ? '' : (document.getElementById('posDialogError').textContent || 'Could not save.');
+    }
+  });
+}
+
+// ── Small dialog ────────────────────────────────────────────────────
+
+function openPosDialog(spec) {
+  posDialogOk = spec.onOk;
+  document.getElementById('posDialogTitle').textContent = spec.title;
+  document.getElementById('posDialogSub').textContent = spec.sub || '';
+  document.getElementById('posDialogBody').innerHTML = spec.body || '';
+  document.getElementById('posDialogError').textContent = '';
+  document.getElementById('posDialogOk').textContent = spec.ok || 'OK';
+  document.getElementById('posDialogOk').disabled = false;
+  document.getElementById('posDialogBackdrop').hidden = false;
+  const first = document.querySelector('#posDialogBody input');
+  if (first) setTimeout(() => first.focus(), 30);
+}
+async function posDialogConfirm() {
+  const btn = document.getElementById('posDialogOk');
+  btn.disabled = true;
+  const msg = await posDialogOk();
+  btn.disabled = false;
+  if (msg) { document.getElementById('posDialogError').textContent = msg; return; }
+  document.getElementById('posDialogBackdrop').hidden = true;
+}
+
+// ── Wiring ──────────────────────────────────────────────────────────
+
+(function wireTill() {
+  const el = (id) => document.getElementById(id);
+  document.querySelectorAll('#posTabs button').forEach((b) => b.addEventListener('click', () => showPosTab(b.dataset.pt)));
+  el('posBranch').addEventListener('change', () => {
+    if (posSale.lines.length) { el('posBranch').value = posBranchNow(); showPosError('Finish or clear the current sale before changing branch.'); return; }
+    posCfg = null; loadTillPage(el('posBranch').value);
+  });
+  el('posCashierBtn').addEventListener('click', openPosPin);
+  el('posPinPad').addEventListener('click', (e) => { const b = e.target.closest('[data-pin]'); if (b) pinKey(b.dataset.pin); });
+  el('posPinMe').addEventListener('click', () => {
+    try { localStorage.removeItem(posKey('cashier')); } catch (e) { /* ignore */ }
+    el('posPinBackdrop').hidden = true; renderPosCashier();
+  });
+  el('posPinClose').addEventListener('click', () => { el('posPinBackdrop').hidden = true; });
+  document.addEventListener('keydown', (e) => {
+    if (el('posPinBackdrop').hidden) return;
+    if (/^\d$/.test(e.key)) pinKey(e.key);
+    else if (e.key === 'Backspace') pinKey('⌫');
+  });
+  el('posCats').addEventListener('click', (e) => { const b = e.target.closest('[data-cat]'); if (b) openPosLine(b.dataset.cat); });
+  el('posCustomBtn').addEventListener('click', () => {
+    const other = posCfg.categories.filter((c) => c.active && /^other$/i.test(c.name))[0];
+    openPosLine(other ? other.id : '');
+  });
+  el('posLines').addEventListener('click', (e) => { const b = e.target.closest('[data-line]'); if (b) openPosLine(null, Number(b.dataset.line)); });
+  el('posMethods').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-method]');
+    if (!b) return;
+    posSale.method = b.dataset.method;
+    if (posSale.method !== 'Cash') el('posCashIn').value = '';
+    renderPosSale();
+  });
+  el('posQuick').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-cash]');
+    if (!b) return;
+    el('posCashIn').value = b.dataset.cash === 'exact' ? posSaleTotal() : b.dataset.cash;
+    updatePosChange();
+  });
+  el('posCashIn').addEventListener('input', updatePosChange);
+  el('posCashIn').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !el('posComplete').disabled) completePosSale(); });
+  el('posComplete').addEventListener('click', completePosSale);
+  el('posClearBtn').addEventListener('click', () => {
+    const b = el('posClearBtn');
+    if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Tap again to clear'; setTimeout(() => { b.dataset.confirm = ''; b.textContent = 'Clear'; }, 3000); return; }
+    b.dataset.confirm = ''; b.textContent = 'Clear';
+    posSale = { lines: [], method: 'Cash' }; el('posCashIn').value = ''; renderPosSale();
+  });
+  el('posNewSale').addEventListener('click', () => { posHideDone(); renderPosSale(); });
+  el('posPrintBtn').addEventListener('click', () => { if (posLastDone) printPosReceipt(posLastDone, false); });
+  el('posRecent').addEventListener('click', (e) => {
+    const r = e.target.closest('[data-reprint]');
+    if (r) { const s = posRecent().filter((x) => x.uid === r.dataset.reprint)[0]; if (s) printPosReceipt(s, true); return; }
+    const v = e.target.closest('[data-void]');
+    if (v) openPosVoid(v.dataset.void);
+  });
+  // line editor
+  el('plMinus').addEventListener('click', () => { el('plQty').value = Math.max(1, (Number(el('plQty').value) || 1) - 1); updatePosLineTotal(); });
+  el('plPlus').addEventListener('click', () => { el('plQty').value = Math.min(999, (Number(el('plQty').value) || 0) + 1); updatePosLineTotal(); });
+  ['plQty', 'plPrice'].forEach((id) => el(id).addEventListener('input', updatePosLineTotal));
+  ['plQty', 'plPrice', 'plDesc'].forEach((id) => el(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); savePosLine(); } }));
+  el('plSave').addEventListener('click', savePosLine);
+  el('plRemove').addEventListener('click', () => { posSale.lines.splice(posEditing, 1); el('posLineBackdrop').hidden = true; renderPosSale(); });
+  el('posLineClose').addEventListener('click', () => { el('posLineBackdrop').hidden = true; });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el('posLineBackdrop').hidden) el('posLineBackdrop').hidden = true; });
+  // sheet
+  el('posSheetBranch').addEventListener('change', loadPosSheet);
+  el('posSheetDate').addEventListener('change', loadPosSheet);
+  el('posSheetPrint').addEventListener('click', printPosSheet);
+  el('posSheetExcel').addEventListener('click', excelPosSheet);
+  // cashiers
+  el('posCashBranch').addEventListener('change', loadPosCashiers);
+  el('pcAdd').addEventListener('click', addPosCashier);
+  el('posCashList').addEventListener('click', (e) => {
+    const p = e.target.closest('[data-cpin]');
+    if (p) { openPosCashierPin(p.dataset.cpin, p.dataset.cname, p.dataset.cactive === '1'); return; }
+    const o = e.target.closest('[data-coff]');
+    if (o) openPosCashierOff(o.dataset.coff, o.dataset.cname);
+  });
+  // settings
+  el('psTill').addEventListener('change', () => savePosDevice({ till: Number(el('psTill').value) }));
+  el('psMode').addEventListener('change', () => savePosDevice({ mode: el('psMode').value }));
+  el('psPaper').addEventListener('change', () => savePosDevice({ paper: Number(el('psPaper').value) }));
+  el('psAutoPrint').addEventListener('change', () => savePosDevice({ autoPrint: el('psAutoPrint').checked }));
+  el('psCatAdd').addEventListener('click', async () => {
+    if (await posCategoryCall({ op: 'add', name: el('psCatName').value, defaultPrice: el('psCatPrice').value })) { el('psCatName').value = ''; el('psCatPrice').value = ''; }
+  });
+  el('psCatList').addEventListener('click', (e) => {
+    const m = e.target.closest('[data-cmove]');
+    if (m) { posCategoryCall({ op: 'move', id: m.dataset.cid, dir: m.dataset.cmove }); return; }
+    const ed = e.target.closest('[data-cedit]');
+    if (ed) openPosCategoryEdit(ed.dataset.cedit);
+  });
+  el('psRcptSave').addEventListener('click', async () => {
+    const err = el('psRcptError');
+    err.textContent = '';
+    const res = await apiPost('posSettings', { requesterEmail: currentUser.email, header: el('psHeader').value, footer: el('psFooter').value });
+    if (!res.success) { err.textContent = res.error || 'Could not save.'; return; }
+    await refreshPosConfigQuietly();
+    err.textContent = 'Saved.';
+  });
+  // dialog
+  el('posDialogOk').addEventListener('click', posDialogConfirm);
+  el('posDialogCancel').addEventListener('click', () => { el('posDialogBackdrop').hidden = true; });
+  el('posDialogClose').addEventListener('click', () => { el('posDialogBackdrop').hidden = true; });
+  window.addEventListener('online', () => { if (posCfg) posSyncNow(); });
+  ['posLineBackdrop', 'posPinBackdrop', 'posDialogBackdrop'].forEach((id) => guardModalBackdrop(id));
 })();
 
 function escapeHtml(str) {

@@ -460,6 +460,119 @@
     </div>
   </section>
 
+  <!-- ─── TILL / POS (Pro: pos) ─────────────────────────────── -->
+  <section id="view-till" class="view" hidden>
+    <div class="card pos-card">
+      <div class="pos-head">
+        <h1>Till</h1>
+        <div class="pos-status">
+          <select id="posBranch" class="pos-branch" aria-label="Branch" hidden></select>
+          <span class="pos-chip" id="posTillChip">Till 1</span>
+          <button type="button" class="pos-chip pos-cashier-btn" id="posCashierBtn" title="Change who is on the till">Cashier: —</button>
+          <span class="pos-chip pos-sync" id="posSync" title="Sales are saved on this device first, then sent">…</span>
+        </div>
+      </div>
+      <div class="sub-switch fin-tabs" id="posTabs">
+        <button type="button" class="active" data-pt="sell" id="posSellTabBtn">Sell</button>
+        <button type="button" data-pt="sheet">Daily sales sheet</button>
+        <button type="button" data-pt="cashiers" id="posCashTabBtn" hidden>Cashiers</button>
+        <button type="button" data-pt="settings" id="posSetTabBtn">Settings</button>
+      </div>
+      <p class="error-text" id="posError" hidden></p>
+      <p class="muted" id="posLoading">Loading the till…</p>
+
+      <div id="pt-sell" class="fin-panel" hidden>
+        <div class="pos-grid">
+          <div class="pos-left">
+            <div id="posCats" class="pos-cats"></div>
+            <button type="button" class="link-btn pos-custom-btn" id="posCustomBtn">+ Something not in the list</button>
+          </div>
+          <div class="pos-right">
+            <div class="pos-sale">
+              <div class="pos-sale-head"><h2>Current sale</h2><button type="button" class="link-btn" id="posClearBtn" hidden>Clear</button></div>
+              <div id="posLines" class="pos-lines"></div>
+              <div class="pos-total"><span><span id="posItemCount">0</span> <span id="posItemWord">items</span></span><strong id="posTotal">R 0.00</strong></div>
+              <div class="pos-methods" id="posMethods"></div>
+              <div id="posCashBox" class="pos-cash">
+                <label>Cash received <input type="number" id="posCashIn" min="0" step="0.01" inputmode="decimal" placeholder="Exact"></label>
+                <div class="pos-quick" id="posQuick"></div>
+                <div class="pos-change"><span>Change</span><strong id="posChange">R 0.00</strong></div>
+              </div>
+              <p class="error-text" id="posSaleError"></p>
+              <button type="button" class="btn-primary pos-complete" id="posComplete" disabled>Complete sale</button>
+            </div>
+            <div class="pos-done" id="posDone" hidden>
+              <p class="pos-done-title">Sale complete</p>
+              <p class="pos-done-change" id="posDoneChange"></p>
+              <p class="muted" id="posDoneRef"></p>
+              <div class="pos-done-actions">
+                <button type="button" class="btn-secondary" id="posPrintBtn">Print receipt</button>
+                <button type="button" class="btn-primary" id="posNewSale">New sale</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h2>Today on this till</h2>
+        <div id="posRecent" class="fin-lines"></div>
+      </div>
+
+      <div id="pt-sheet" class="fin-panel" hidden>
+        <div class="fin-filters pos-sheet-filters">
+          <label id="posSheetBranchWrap">Branch <select id="posSheetBranch"></select></label>
+          <label>Date <input type="date" id="posSheetDate"></label>
+          <div class="pos-sheet-btns">
+            <button type="button" class="btn-secondary" id="posSheetPrint">Print / PDF</button>
+            <button type="button" class="btn-secondary" id="posSheetExcel">Excel</button>
+          </div>
+        </div>
+        <div id="posSheetBody"><p class="muted">Loading…</p></div>
+      </div>
+
+      <div id="pt-cashiers" class="fin-panel" hidden>
+        <p class="muted">Anyone who works the till — staff or volunteers — gets a 4-digit PIN. At the till they tap <strong>Cashier</strong> and enter it, so every sale shows who rang it up. The PIN only says who is at the till; the till itself stays signed in as the Store Manager.</p>
+        <div class="fin-filters" id="posCashBranchWrap"><label>Branch <select id="posCashBranch"></select></label></div>
+        <div id="posCashList" class="fin-lines"></div>
+        <h2>Add a cashier</h2>
+        <div class="grid-2">
+          <label>Name <input type="text" id="pcName" maxlength="60" placeholder="e.g. Fatima"></label>
+          <label>App email (optional) <input type="email" id="pcEmail" maxlength="120" placeholder="Only if they also use the app"></label>
+          <label>PIN (4 digits) <input type="password" id="pcPin" inputmode="numeric" maxlength="4" autocomplete="new-password"></label>
+          <label>PIN again <input type="password" id="pcPin2" inputmode="numeric" maxlength="4" autocomplete="new-password"></label>
+        </div>
+        <p class="error-text" id="pcError"></p>
+        <button type="button" class="btn-primary pos-inline-btn" id="pcAdd">Add cashier</button>
+      </div>
+
+      <div id="pt-settings" class="fin-panel" hidden>
+        <h2>This device</h2>
+        <p class="muted">These settings are saved on this computer or tablet only.</p>
+        <div class="grid-2">
+          <label>Till number <select id="psTill"></select></label>
+          <label>Screen layout <select id="psMode"><option value="auto">Automatic</option><option value="desktop">Desktop (mouse &amp; keyboard)</option><option value="touch">Touchscreen (big buttons)</option></select></label>
+          <label>Receipt paper <select id="psPaper"><option value="80">80 mm</option><option value="58">58 mm</option></select></label>
+        </div>
+        <label class="fin-check"><input type="checkbox" id="psAutoPrint"> Print a receipt automatically after every sale</label>
+        <p class="muted pos-help">One-tap printing: set the receipt printer as the computer's default printer, and start Chrome with <code>--kiosk-printing</code> so it prints without showing the print window. With more than one till in a shop, give each device its own till number.</p>
+        <div id="psAdmin" hidden>
+          <h2>Sales categories</h2>
+          <p class="muted">The buttons on the till, in this order. A usual price is filled in for the cashier (they can change it). Hidden categories stay on old sales.</p>
+          <div id="psCatList" class="pos-cat-admin"></div>
+          <div class="pos-cat-add">
+            <input type="text" id="psCatName" maxlength="40" placeholder="New category, e.g. Handbags">
+            <input type="number" id="psCatPrice" min="0" step="0.01" inputmode="decimal" placeholder="Usual price (optional)">
+            <button type="button" class="btn-secondary" id="psCatAdd">Add</button>
+          </div>
+          <p class="error-text" id="psCatError"></p>
+          <h2>Receipt</h2>
+          <label>Top of receipt <textarea id="psHeader" rows="3" maxlength="300" placeholder="Charity name, address, NPO number"></textarea></label>
+          <label>Bottom of receipt <textarea id="psFooter" rows="2" maxlength="300" placeholder="Thank you message, returns policy"></textarea></label>
+          <p class="error-text" id="psRcptError"></p>
+          <button type="button" class="btn-primary pos-inline-btn" id="psRcptSave">Save receipt text</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ─── ASSETS (Pro: assets) ──────────────────────────────── -->
   <section id="view-assets" class="view" hidden>
     <div class="card">
@@ -1079,6 +1192,74 @@
     </div>
   </div>
 </div>
+
+<!-- ─── TILL: LINE EDITOR ───────────────────────────────────── -->
+<div id="posLineBackdrop" class="modal-backdrop pos-modal" hidden>
+  <div class="modal job-modal pos-line-modal" role="dialog" aria-modal="true" aria-labelledby="posLineTitle">
+    <div class="modal-head">
+      <h2 id="posLineTitle" style="margin:0;">Item</h2>
+      <button type="button" class="modal-close" id="posLineClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="pos-qty-row">
+        <span class="pos-field-label">Quantity</span>
+        <div class="pos-stepper">
+          <button type="button" id="plMinus" aria-label="One less">−</button>
+          <input type="number" id="plQty" min="1" max="999" step="1" inputmode="numeric" value="1">
+          <button type="button" id="plPlus" aria-label="One more">+</button>
+        </div>
+      </div>
+      <label>Price each (R) <input type="number" id="plPrice" min="0" step="0.01" inputmode="decimal"></label>
+      <label><span id="plDescLabel">Description (optional)</span> <input type="text" id="plDesc" maxlength="120" placeholder="e.g. Defy fridge, blue dress"></label>
+      <div class="pos-line-total"><span>Line total</span><strong id="plTotal">R 0.00</strong></div>
+      <p class="error-text" id="plError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="plRemove" hidden>Remove</button>
+        <button type="button" class="btn-primary" id="plSave">Add to sale</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── TILL: WHO IS ON THE TILL (PIN) ─────────────────────── -->
+<div id="posPinBackdrop" class="modal-backdrop pos-modal" hidden>
+  <div class="modal job-modal pos-pin-modal" role="dialog" aria-modal="true" aria-labelledby="posPinTitle">
+    <div class="modal-head">
+      <h2 id="posPinTitle" style="margin:0;">Who's on the till?</h2>
+      <button type="button" class="modal-close" id="posPinClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted" id="posPinHint">Enter your 4-digit till PIN.</p>
+      <div class="pos-pin-dots" id="posPinDots"><span></span><span></span><span></span><span></span></div>
+      <div class="pos-pin-pad" id="posPinPad"></div>
+      <p class="error-text" id="posPinError"></p>
+      <button type="button" class="btn-secondary pos-me-btn" id="posPinMe">Use my own name</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── TILL: CONFIRM / SMALL DIALOG ───────────────────────── -->
+<div id="posDialogBackdrop" class="modal-backdrop pos-modal" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="posDialogTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="posDialogTitle" style="margin:0;"></h2>
+        <p class="muted" id="posDialogSub" style="margin:4px 0 0;font-size:13px;"></p>
+      </div>
+      <button type="button" class="modal-close" id="posDialogClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="posDialogBody"></div>
+      <p class="error-text" id="posDialogError"></p>
+      <div class="user-edit-actions">
+        <button type="button" class="btn-secondary" id="posDialogCancel">Back</button>
+        <button type="button" class="btn-primary" id="posDialogOk">OK</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<iframe id="posPrintFrame" title="Receipt" aria-hidden="true" tabindex="-1" style="position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;"></iframe>
 
 <!-- ─── ASSETS: DETAIL ─────────────────────────────────────── -->
 <div id="assetDetailBackdrop" class="modal-backdrop asset-modal" hidden>
