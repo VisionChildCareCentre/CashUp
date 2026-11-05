@@ -480,6 +480,7 @@
       <div class="sub-switch fin-tabs" id="posTabs">
         <button type="button" class="active" data-pt="sell" id="posSellTabBtn">Sell</button>
         <button type="button" data-pt="sheet">Daily sales sheet</button>
+        <button type="button" data-pt="items" id="posItemsTabBtn">Items for sale</button>
         <button type="button" data-pt="reports" id="posRepTabBtn" hidden>Reports</button>
         <button type="button" data-pt="cashiers" id="posCashTabBtn" hidden>Cashiers</button>
         <button type="button" data-pt="settings" id="posSetTabBtn">Settings</button>
@@ -505,7 +506,10 @@
         <div class="pos-grid" id="posSellGrid">
           <div class="pos-left">
             <div id="posCats" class="pos-cats"></div>
-            <button type="button" class="link-btn pos-custom-btn" id="posCustomBtn">+ Something not in the list</button>
+            <div class="pos-extra-btns">
+              <button type="button" class="btn-secondary pos-reg-btn" id="posRegBtn">Registered item (code)</button>
+              <button type="button" class="link-btn pos-custom-btn" id="posCustomBtn">+ Something not in the list</button>
+            </div>
           </div>
           <div class="pos-right">
             <div class="pos-sale">
@@ -527,6 +531,7 @@
               <p class="muted" id="posDoneRef"></p>
               <div class="pos-done-actions">
                 <button type="button" class="btn-secondary" id="posPrintBtn">Print receipt</button>
+                <button type="button" class="btn-secondary" id="posDeliverBtn" hidden>Arrange delivery</button>
                 <button type="button" class="btn-primary" id="posNewSale">New sale</button>
               </div>
             </div>
@@ -553,6 +558,28 @@
           </div>
         </div>
         <div id="posSheetBody"><p class="muted">Loading…</p></div>
+      </div>
+
+      <div id="pt-items" class="fin-panel" hidden>
+        <p class="muted">Big or one-off items — fridges, stoves, couches, beds — get their own code (e.g. LAN-0012) and a price. Stick the printed label on the item. At the till, tap <strong>Registered item</strong> and type or scan the code: it can only be sold once, and comes back for sale if the sale is cancelled or refunded.</p>
+        <div id="piAddWrap">
+          <h2>Register an item</h2>
+          <div class="grid-2">
+            <label>Category <select id="piCat"></select></label>
+            <label>Price (R) <input type="number" id="piPrice" min="0" step="0.01" inputmode="decimal"></label>
+          </div>
+          <label>Description <input type="text" id="piDesc" maxlength="100" placeholder="e.g. Defy fridge, white, 2 door"></label>
+          <label>Notes (optional) <input type="text" id="piNotes" maxlength="300" placeholder="e.g. small dent on the side, tested and working"></label>
+          <p class="error-text" id="piError"></p>
+          <button type="button" class="btn-primary pos-inline-btn" id="piAdd">Register item</button>
+        </div>
+        <h2>Items</h2>
+        <div class="fin-filters pos-items-filters">
+          <label id="piBranchWrap">Branch <select id="piBranch"></select></label>
+          <label>Show <select id="piStatus"><option value="Available">For sale</option><option value="Sold">Sold</option><option value="Removed">Removed</option><option value="all">All</option></select></label>
+          <label>Search <input type="search" id="piSearch" placeholder="Code or description"></label>
+        </div>
+        <div id="piList" class="fin-lines"></div>
       </div>
 
       <div id="pt-reports" class="fin-panel" hidden>
@@ -1296,6 +1323,20 @@
         <button type="button" class="btn-primary" id="posFindGo">Find</button>
       </div>
       <div id="posReceiptBody"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── TILL: PICK A REGISTERED ITEM ────────────────────────── -->
+<div id="posPickBackdrop" class="modal-backdrop pos-modal" hidden>
+  <div class="modal job-modal" role="dialog" aria-modal="true" aria-labelledby="posPickTitle">
+    <div class="modal-head">
+      <h2 id="posPickTitle" style="margin:0;">Registered item</h2>
+      <button type="button" class="modal-close" id="posPickClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="search" id="posPickIn" placeholder="Type or scan the code, or search, e.g. 12 or fridge" autocomplete="off">
+      <div id="posPickList" class="pos-pick-list"></div>
     </div>
   </div>
 </div>

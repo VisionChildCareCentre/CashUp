@@ -1240,3 +1240,17 @@ input.from-till { background: #eef7f1; border-color: #9fd3b2; }
 @media (min-width: 900px) { #view-till .dash-two-col { grid-template-columns: 1fr 1fr; } }
 #view-till .chart-wrap { position: relative; height: 280px; }
 #view-till .chart-wrap-short { height: 230px; }
+/* Till — phase 4 */
+.pos-extra-btns { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.pos-extra-btns .pos-custom-btn { margin-top: 0; }
+.pos-reg-btn { width: auto; flex: 0 0 auto; padding: 10px 16px; }
+.pos-code { display: inline-block; background: #142132; color: #fff; border-radius: 4px; padding: 0 5px; font-size: 11.5px; letter-spacing: .03em; vertical-align: 1px; }
+.pos-pick-list { margin-top: 10px; max-height: 55vh; overflow-y: auto; }
+.pos-pick { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; padding: 12px 10px; border: 1px solid var(--border);
+  border-radius: 10px; background: #fff; margin-bottom: 8px; font: inherit; font-size: 15px; text-align: left; cursor: pointer; color: var(--ink); }
+.pos-pick:hover { background: #f4f8fd; border-color: #c9dcf5; }
+.pos-pick > span { display: flex; flex-direction: column; }
+.pos-pick .muted { font-size: 12.5px; }
+.pos-items-filters { align-items: end; }
+.pos-ok-msg { color: var(--success); font-weight: 600; }
+.pos-done-actions { flex-wrap: wrap; }

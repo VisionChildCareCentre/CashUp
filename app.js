@@ -5367,7 +5367,7 @@ function openPosFind(prefill) {
 // Merge a device-only sale (not sent yet) into the server's shape.
 function posLocalAsServer(x) {
   return Object.assign({}, x, { kind: x.kind || 'Sale', pending: !x.sent,
-    lines: x.lines.map((l, i) => ({ line: l.line || i + 1, categoryId: l.categoryId, category: l.categoryName, description: l.description,
+    lines: x.lines.map((l, i) => ({ line: l.line || i + 1, categoryId: l.categoryId, category: l.categoryName, description: l.description, itemCode: l.itemCode || '',
       qty: x.kind === 'Refund' ? -l.qty : l.qty, price: l.price, lineTotal: (x.kind === 'Refund' ? -1 : 1) * posMoney(l.qty * l.price) })) });
 }
 
@@ -5412,7 +5412,9 @@ function posReceiptCard(x, i) {
     (x.kind === 'Refund' ? '<p class="muted">Refund of ' + e(x.refundOfReceipt || '') + (x.refundReason ? ' — ' + e(x.refundReason) : '') + '</p>' : '') +
     (x.refunds && x.refunds.length ? '<p class="muted">' + x.refunds.map((r) => 'Refunded ' + rand(-r.total) + ' on ' + e(assetWhen(r.time.slice(0, 16))) + ' (' + e(r.receiptNo) + ')' +
       (r.status === 'Cancelled' ? ' — cancelled' : '')).join('<br>') + '</p>' : '') +
+    (x.deliveryRef ? '<p class="muted">Delivery: <strong>' + e(x.deliveryRef) + '</strong></p>' : '') +
     '<div class="asset-actions"><button type="button" class="btn-secondary" data-rcpt-print="' + i + '">Reprint</button>' +
+      (posCfg.deliveries && x.kind !== 'Refund' && x.status !== 'Cancelled' && !x.deliveryRef ? '<button type="button" class="btn-secondary" data-rcpt-deliver="' + i + '">Arrange delivery</button>' : '') +
       (canRefund ? '<button type="button" class="btn-primary" data-rcpt-refund="' + i + '">Refund…</button>' : '') + '</div></div>';
 }
 
@@ -5423,7 +5425,7 @@ function posRefundedQty(x) {
 }
 
 function posServerToReceipt(x) {
-  return Object.assign({}, x, { lines: x.lines.map((l) => ({ line: l.line, categoryId: l.categoryId, categoryName: l.category, description: l.description,
+  return Object.assign({}, x, { lines: x.lines.map((l) => ({ line: l.line, categoryId: l.categoryId, categoryName: l.category, description: l.description, itemCode: l.itemCode || '',
     qty: Math.abs(l.qty), price: l.price })) });
 }
 
@@ -5471,7 +5473,7 @@ function doPosRefund() {
     const ol = x.lines.filter((l) => String(l.line) === inp.dataset.rfLine)[0];
     const left = ol.qty - (refunded[ol.line] || 0);
     if (qty < 0 || qty > left || Math.round(qty) !== qty) bad = 'Only ' + left + ' × ' + (ol.description || ol.category) + ' can be refunded.';
-    lines.push({ line: ol.line, categoryId: ol.categoryId, categoryName: ol.category, description: ol.description, qty: qty, price: ol.price });
+    lines.push({ line: ol.line, categoryId: ol.categoryId, categoryName: ol.category, description: ol.description, qty: qty, price: ol.price, itemCode: ol.itemCode || '' });
   });
   if (bad) { err.textContent = bad; return; }
   if (!lines.length) { err.textContent = 'Choose what is being refunded.'; return; }
@@ -5568,6 +5570,246 @@ function fillCashupFromTill() {
   recalcAll();
   document.getElementById('tillFillBtn').textContent = 'Filled in ✓ — fill in again';
 }
+
+
+// ── Phase 4: registered items (fridges, furniture…) ────────────────
+
+// Codes this device has sold that the server may not know about yet
+// (and minus the ones refunded here since).
+function posLocallySoldCodes() {
+  const sold = {};
+  posRecent().slice().reverse().forEach((s) => {
+    if (s.branch !== posBranchNow()) return;
+    s.lines.forEach((l) => {
+      if (!l.itemCode) return;
+      if (s.kind === 'Refund') { if (s.status !== 'Cancelled') delete sold[l.itemCode]; }
+      else if (s.status !== 'Cancelled') sold[l.itemCode] = true;
+      else delete sold[l.itemCode];
+    });
+  });
+  return sold;
+}
+
+function posPickableItems() {
+  const inSale = {};
+  posSale.lines.forEach((l) => { if (l.itemCode) inSale[l.itemCode] = true; });
+  const sold = posLocallySoldCodes();
+  return (posCfg.items || []).filter((x) => !inSale[x.code] && !sold[x.code]);
+}
+
+function openPosPick() {
+  document.getElementById('posPickIn').value = '';
+  renderPosPick();
+  document.getElementById('posPickBackdrop').hidden = false;
+  setTimeout(() => document.getElementById('posPickIn').focus(), 30);
+}
+
+function posPickMatches() {
+  const q = document.getElementById('posPickIn').value.trim().toUpperCase();
+  const list = posPickableItems();
+  if (!q) return list;
+  const digits = /^\d+$/.test(q) ? Number(q) : null;
+  return list.filter((x) => x.code === q || (digits !== null && Number(x.code.split('-').pop()) === digits) ||
+    (x.code + ' ' + x.description + ' ' + x.category).toUpperCase().indexOf(q) !== -1);
+}
+
+function renderPosPick() {
+  const list = posPickMatches();
+  const all = posPickableItems();
+  document.getElementById('posPickList').innerHTML = list.length ? list.map((x) =>
+    '<button type="button" class="pos-pick" data-pick="' + escapeAttr(x.code) + '"><span><strong>' + escapeHtml(x.code) + '</strong> · ' + escapeHtml(x.description) +
+    '<span class="muted">' + escapeHtml(x.category) + '</span></span><strong>' + rand(x.price) + '</strong></button>').join('')
+    : '<p class="muted">' + (all.length ? 'No item matches. Check the code on the label.' : 'No registered items for sale at ' + escapeHtml(posBranchNow()) + '. Add them on the "Items for sale" tab.') + '</p>';
+}
+
+function pickPosItem(code) {
+  const x = (posCfg.items || []).filter((i) => i.code === code)[0];
+  if (!x) return;
+  posSale.lines.push({ categoryId: x.categoryId, categoryName: x.category, qty: 1, price: x.price, description: x.description, itemCode: x.code });
+  document.getElementById('posPickBackdrop').hidden = true;
+  posHideDone();
+  renderPosSale();
+}
+
+// ── Items for sale tab ─────────────────────────────────────────────
+let posItemsList = [];
+
+async function loadPosItemsTab() {
+  const d = posCfg;
+  document.getElementById('piAddWrap').hidden = !d.canSell;
+  const cat = document.getElementById('piCat');
+  if (!cat.options.length) cat.innerHTML = d.categories.filter((c) => c.active).map((c) => '<option value="' + escapeAttr(c.id) + '"' + (/applian/i.test(c.name) ? ' selected' : '') + '>' + escapeHtml(c.name) + '</option>').join('');
+  const bsel = document.getElementById('piBranch');
+  if (!bsel.options.length) { bsel.innerHTML = d.branches.map((b) => '<option value="' + escapeAttr(b) + '">' + escapeHtml(b) + '</option>').join(''); bsel.value = d.branch || d.branches[0]; }
+  document.getElementById('piBranchWrap').hidden = d.branches.length < 2;
+  const list = document.getElementById('piList');
+  list.innerHTML = '<p class="muted">Loading…</p>';
+  const res = await apiGet('posItems', { email: currentUser.email, branch: bsel.value, status: 'all' });
+  if (!res.success) { list.innerHTML = '<p class="error-text">' + escapeHtml(res.error || 'Could not load items.') + '</p>'; return; }
+  posItemsList = res.items;
+  renderPosItemsTab();
+}
+
+function renderPosItemsTab() {
+  const st = document.getElementById('piStatus').value;
+  const q = document.getElementById('piSearch').value.trim().toUpperCase();
+  const e = escapeHtml;
+  const canEdit = posCfg.canSell;
+  const list = posItemsList.filter((x) => (st === 'all' || x.status === st) && (!q || (x.code + ' ' + x.description + ' ' + x.category).toUpperCase().indexOf(q) !== -1));
+  const tag = { Available: 'as-ok', Sold: 'as-info', Removed: 'as-gone' };
+  document.getElementById('piList').innerHTML = list.length ? list.map((x) => '<div class="fin-line"><span class="fin-line-main">' +
+    '<span class="fin-line-desc"><strong>' + e(x.code) + '</strong> · ' + e(x.description) + ' <span class="status-tag ' + tag[x.status] + '">' + e(x.status === 'Available' ? 'For sale' : x.status) + '</span></span>' +
+    '<span class="fin-line-meta">' + e(x.category) + ' · added ' + e(assetWhen(x.addedAt.slice(0, 10))) + ' by ' + e(x.addedBy) +
+      (x.status === 'Sold' ? ' · sold ' + e(assetWhen(x.soldAt.slice(0, 16))) + ' on ' + e(x.soldReceipt) : '') +
+      (x.status === 'Removed' ? ' · removed: ' + e(x.removedReason) : '') + '</span>' +
+    (x.notes.replace(/ ?\[[^\]]+\]$/, '') ? '<span class="fin-line-meta">' + e(x.notes.replace(/ ?\[[^\]]+\]$/, '')) + '</span>' : '') +
+    (x.conflict ? '<span class="fin-line-meta"><span class="pos-flag">' + e(x.conflict) + '</span>' + (canEdit ? ' <button type="button" class="link-btn" data-pi-ok="' + e(x.code) + '">Sorted out</button>' : '') + '</span>' : '') +
+    '</span><span class="fin-line-side"><span class="fin-line-amt">' + rand(x.price) + '</span>' +
+    '<button type="button" class="link-btn" data-pi-label="' + e(x.code) + '">Label</button>' +
+    (canEdit && x.status === 'Available' ? '<button type="button" class="link-btn" data-pi-edit="' + e(x.code) + '">Edit</button><button type="button" class="link-btn asset-file-rm" data-pi-rm="' + e(x.code) + '">Remove</button>' : '') +
+    (canEdit && x.status === 'Removed' ? '<button type="button" class="link-btn" data-pi-back="' + e(x.code) + '">Put back on sale</button>' : '') +
+    '</span></div>').join('') : '<p class="muted">No items here.</p>';
+}
+
+async function addPosItem() {
+  const err = document.getElementById('piError');
+  const btn = document.getElementById('piAdd');
+  err.textContent = '';
+  const desc = document.getElementById('piDesc').value.trim();
+  const price = document.getElementById('piPrice').value;
+  if (!desc) { err.textContent = 'Describe the item.'; return; }
+  if (!(Number(price) > 0)) { err.textContent = 'Enter the selling price.'; return; }
+  btn.disabled = true; btn.textContent = 'Registering…';
+  const res = await apiPost('posItem', { requesterEmail: currentUser.email, op: 'add', branch: document.getElementById('piBranch').value || posBranchNow(),
+    categoryId: document.getElementById('piCat').value, description: desc, price: price, notes: document.getElementById('piNotes').value.trim(),
+    requestId: 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7) });
+  btn.disabled = false; btn.textContent = 'Register item';
+  if (!res.success) { err.textContent = res.networkError ? 'Registering an item needs the internet. Try again when you\'re back online.' : (res.error || 'Could not register.'); return; }
+  ['piDesc', 'piPrice', 'piNotes'].forEach((id) => { document.getElementById(id).value = ''; });
+  err.innerHTML = '<span class="pos-ok-msg">Registered as <strong>' + escapeHtml(res.code) + '</strong>. <button type="button" class="link-btn" data-pi-label="' + escapeAttr(res.code) + '">Print its label</button></span>';
+  await refreshPosConfigQuietly();
+  await loadPosItemsTab();
+}
+
+function printPosLabel(code) {
+  const x = posItemsList.filter((i) => i.code === code)[0] || (posCfg.items || []).filter((i) => i.code === code)[0];
+  if (!x) return;
+  const e = escapeHtml;
+  const w = posDevice().paper === 58 ? 48 : 72;
+  const html = '<!doctype html><html><head><meta charset="utf-8"><style>@page{size:' + (posDevice().paper === 58 ? 58 : 80) + 'mm auto;margin:0}' +
+    'body{width:' + w + 'mm;margin:0 auto;padding:4mm 0 8mm;font-family:Arial,sans-serif;text-align:center;color:#000}' +
+    '.org{font-size:10px}.code{font-size:30px;font-weight:900;letter-spacing:1px;border:2.5px solid #000;padding:2mm 0;margin:2mm 0}' +
+    '.desc{font-size:14px;font-weight:bold;margin:1mm 0}.price{font-size:26px;font-weight:900;margin-top:2mm}.cat{font-size:11px}</style></head><body>' +
+    '<div class="org">' + e(((posCfg.receipt || {}).header || '').split('\n')[0]) + ' · ' + e(x.branch || posBranchNow()) + '</div>' +
+    '<div class="code">' + e(x.code) + '</div><div class="desc">' + e(x.description) + '</div><div class="cat">' + e(x.category) + '</div>' +
+    '<div class="price">R' + Number(x.price).toFixed(2) + '</div></body></html>';
+  const frame = document.getElementById('posPrintFrame');
+  frame.onload = () => { frame.onload = null; try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (err) { /* ignore */ } };
+  frame.srcdoc = html;
+}
+
+function openPosItemEdit(code) {
+  const x = posItemsList.filter((i) => i.code === code)[0];
+  openPosDialog({
+    title: 'Edit ' + code, sub: 'Changes show on the till straight away (reprint the label if the price changed).',
+    body: '<label>Description <input type="text" id="pdItemDesc" maxlength="100" value="' + escapeAttr(x.description) + '"></label>' +
+      '<label>Price (R) <input type="number" id="pdItemPrice" min="0" step="0.01" value="' + x.price + '"></label>',
+    ok: 'Save',
+    onOk: async () => {
+      const res = await apiPost('posItem', { requesterEmail: currentUser.email, op: 'update', code: code, description: document.getElementById('pdItemDesc').value, price: document.getElementById('pdItemPrice').value });
+      if (!res.success) return res.error || 'Could not save.';
+      await refreshPosConfigQuietly(); loadPosItemsTab();
+      return '';
+    }
+  });
+}
+
+function openPosItemRemove(code) {
+  openPosDialog({
+    title: 'Remove ' + code + ' from sale', sub: 'It stays on record and can be put back on sale later.',
+    body: '<label>Why? <input type="text" id="pdItemWhy" maxlength="200" placeholder="e.g. damaged, given away, moved to another branch"></label>',
+    ok: 'Remove',
+    onOk: async () => {
+      const res = await apiPost('posItem', { requesterEmail: currentUser.email, op: 'remove', code: code, reason: document.getElementById('pdItemWhy').value });
+      if (!res.success) return res.error || 'Could not remove.';
+      await refreshPosConfigQuietly(); loadPosItemsTab();
+      return '';
+    }
+  });
+}
+
+async function posItemSimple(op, code) {
+  const res = await apiPost('posItem', { requesterEmail: currentUser.email, op: op, code: code });
+  if (!res.success) { showPosError(res.error || 'Could not save.'); return; }
+  await refreshPosConfigQuietly(); loadPosItemsTab();
+}
+
+// ── Phase 4: a delivery from a sale ────────────────────────────────
+
+function openPosDelivery(sale) {
+  if (!posCfg.deliveries) return;
+  const tomorrow = new Date(Date.now() + 86400000);
+  const p = (n) => String(n).padStart(2, '0');
+  const tm = tomorrow.getFullYear() + '-' + p(tomorrow.getMonth() + 1) + '-' + p(tomorrow.getDate());
+  openPosDialog({
+    title: 'Arrange delivery', sub: sale.receiptNo + ' · ' + sale.lines.map((l) => l.qty + '× ' + (l.description || l.categoryName || l.category)).join(', '),
+    body: '<p class="muted">This creates a delivery request in Deliveries, already filled in from the sale. Head Office approves and schedules it as usual.</p>' +
+      '<div class="grid-2"><label>Customer name <input type="text" id="pdCustName" maxlength="120"></label>' +
+      '<label>Contact number <input type="tel" id="pdCustTel" maxlength="30" inputmode="tel"></label></div>' +
+      '<label>Delivery address <textarea id="pdCustAddr" rows="2" maxlength="400"></textarea></label>' +
+      '<div class="grid-2"><label>Deliver by <input type="date" id="pdCustDate" value="' + tm + '"></label>' +
+      '<label>Instructions (optional) <input type="text" id="pdCustNote" maxlength="300" placeholder="e.g. 2nd floor, call first"></label></div>',
+    ok: 'Request delivery',
+    onOk: async () => {
+      const name = document.getElementById('pdCustName').value.trim();
+      const tel = document.getElementById('pdCustTel').value.trim();
+      const addr = document.getElementById('pdCustAddr').value.trim();
+      if (!name || !tel || !addr) return 'Enter the customer\'s name, contact number and address.';
+      // the sale has to be at Head Office first
+      if (posQueue().some((op) => op.type === 'sale' && op.sale.uid === sale.uid)) await posSyncNow();
+      if (posQueue().some((op) => op.type === 'sale' && op.sale.uid === sale.uid)) return 'The sale hasn\'t been sent yet (no internet?). Try again when the till shows "All sent ✓".';
+      const res = await apiPost('posDelivery', { requesterEmail: currentUser.email, uid: sale.uid, customerName: name, customerContact: tel, address: addr,
+        requiredDate: document.getElementById('pdCustDate').value, instructions: document.getElementById('pdCustNote').value.trim() });
+      if (!res.success) return res.networkError ? 'No internet — try again in a moment.' : (res.error || 'Could not create the delivery.');
+      posSetRecent(posRecent().map((x) => (x.uid === sale.uid ? Object.assign(x, { deliveryRef: res.ref }) : x)));
+      setTimeout(() => {
+        openPosDialog({ title: 'Delivery requested', sub: res.ref, body: '<p>Delivery <strong>' + escapeHtml(res.ref) + '</strong> is waiting for Head Office to approve and schedule. You can follow it on the Deliveries tab.</p>' +
+          (res.warning ? '<p class="muted">' + escapeHtml(res.warning) + '</p>' : ''), ok: 'OK', onOk: () => '' });
+        document.getElementById('posDialogCancel').hidden = true;
+      }, 0);
+      if (currentPage === 'till' && posTab === 'sell') renderPosRecent();
+      return '';
+    }
+  });
+}
+
+(function wirePosItems() {
+  const el = (id) => document.getElementById(id);
+  el('posRegBtn').addEventListener('click', openPosPick);
+  el('posPickClose').addEventListener('click', () => { el('posPickBackdrop').hidden = true; });
+  el('posPickIn').addEventListener('input', renderPosPick);
+  el('posPickIn').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const m = posPickMatches();
+    if (m.length === 1) pickPosItem(m[0].code);
+  });
+  el('posPickList').addEventListener('click', (e) => { const b = e.target.closest('[data-pick]'); if (b) pickPosItem(b.dataset.pick); });
+  el('piAdd').addEventListener('click', addPosItem);
+  el('piBranch').addEventListener('change', loadPosItemsTab);
+  el('piStatus').addEventListener('change', renderPosItemsTab);
+  el('piSearch').addEventListener('input', renderPosItemsTab);
+  el('pt-items').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-pi-label],[data-pi-edit],[data-pi-rm],[data-pi-back],[data-pi-ok]');
+    if (!t) return;
+    if (t.dataset.piLabel) printPosLabel(t.dataset.piLabel);
+    else if (t.dataset.piEdit) openPosItemEdit(t.dataset.piEdit);
+    else if (t.dataset.piRm) openPosItemRemove(t.dataset.piRm);
+    else if (t.dataset.piBack) posItemSimple('restore', t.dataset.piBack);
+    else if (t.dataset.piOk) posItemSimple('clearConflict', t.dataset.piOk);
+  });
+  el('posDeliverBtn').addEventListener('click', () => { if (posLastDone) openPosDelivery(posLastDone); });
+  guardModalBackdrop('posPickBackdrop');
+})();
 
 function openAssetCategory(cat) {
   assetCatEditing = cat || null;
@@ -5776,6 +6018,7 @@ function renderTill() {
   document.getElementById('posSellTabBtn').hidden = !d.canSell;
   document.getElementById('posCashTabBtn').hidden = !d.canCashiers;
   document.getElementById('posRepTabBtn').hidden = !d.seesAll;
+  document.getElementById('posDeliverBtn').hidden = !d.deliveries;
   if (posTab === 'reports' && !d.seesAll) posTab = 'sell';
   document.getElementById('posSetTabBtn').hidden = !d.canSell && !d.canManage;
   if (!d.canSell && (posTab === 'sell' || posTab === 'cashiers')) posTab = 'sheet';
@@ -5787,8 +6030,9 @@ function renderTill() {
 function showPosTab(tab) {
   posTab = tab;
   document.querySelectorAll('#posTabs button').forEach((b) => b.classList.toggle('active', b.dataset.pt === tab));
-  ['sell', 'sheet', 'reports', 'cashiers', 'settings'].forEach((t) => { document.getElementById('pt-' + t).hidden = t !== tab; });
+  ['sell', 'sheet', 'items', 'reports', 'cashiers', 'settings'].forEach((t) => { document.getElementById('pt-' + t).hidden = t !== tab; });
   if (tab === 'reports') loadPosReports();
+  else if (tab === 'items') loadPosItemsTab();
   else if (tab === 'sell') renderPosSell();
   else if (tab === 'sheet') loadPosSheet();
   else if (tab === 'cashiers') loadPosCashiers();
@@ -5866,7 +6110,7 @@ function renderPosSale() {
   const total = posSaleTotal();
   const items = posSale.lines.reduce((t, l) => t + l.qty, 0);
   document.getElementById('posLines').innerHTML = posSale.lines.length ? posSale.lines.map((l, i) =>
-    '<button type="button" class="pos-line" data-line="' + i + '"><span class="pos-line-desc"><strong>' + l.qty + ' × ' + escapeHtml(l.categoryName) + '</strong>' +
+    '<button type="button" class="pos-line" data-line="' + i + '"><span class="pos-line-desc"><strong>' + l.qty + ' × ' + escapeHtml(l.categoryName) + (l.itemCode ? ' <span class="pos-code">' + escapeHtml(l.itemCode) + '</span>' : '') + '</strong>' +
     (l.description ? '<span class="muted">' + escapeHtml(l.description) + '</span>' : '') + '<span class="muted">@ ' + rand(l.price) + '</span></span>' +
     '<span class="pos-line-amt">' + rand(posMoney(l.qty * l.price)) + '</span></button>').join('')
     : '<p class="muted pos-empty">Tap a category to add an item.</p>';
@@ -5878,7 +6122,13 @@ function renderPosSale() {
   const cash = posSale.method === 'Cash';
   document.getElementById('posCashBox').hidden = !cash;
   if (cash) {
-    const notes = [10, 20, 50, 100, 200, 500].filter((n) => n > total).slice(0, 3);
+    // the next round amounts a customer is likely to hand over
+    const notes = [];
+    [10, 20, 50, 100, 200, 500].forEach((step) => {
+      const v = Math.ceil((total + 0.001) / step) * step;
+      if (v > total && notes.indexOf(v) === -1) notes.push(v);
+    });
+    notes.sort((a, b) => a - b).splice(3);
     document.getElementById('posQuick').innerHTML = '<button type="button" data-cash="exact">Exact</button>' +
       notes.map((n) => '<button type="button" data-cash="' + n + '">R' + n + '</button>').join('');
   }
@@ -5909,6 +6159,10 @@ function openPosLine(catId, index) {
   document.getElementById('plDescLabel').textContent = other ? 'What is it?' : 'Description (optional)';
   document.getElementById('plRemove').hidden = !line;
   document.getElementById('plSave').textContent = line ? 'Update' : 'Add to sale';
+  const reg = !!(line && line.itemCode);
+  ['plQty', 'plMinus', 'plPlus'].forEach((id) => { document.getElementById(id).disabled = reg; });
+  document.getElementById('plDesc').readOnly = reg;
+  if (reg) document.getElementById('posLineTitle').textContent = line.itemCode + ' · ' + line.categoryName;
   document.getElementById('plError').textContent = '';
   updatePosLineTotal();
   document.getElementById('posLineBackdrop').hidden = false;
@@ -5933,7 +6187,9 @@ function savePosLine() {
   if (!(qty >= 1 && qty <= 999 && Math.round(qty) === qty)) { err.textContent = 'Quantity must be a whole number from 1 to 999.'; return; }
   if (priceRaw === '' || !(price >= 0 && price <= 1000000)) { err.textContent = 'Enter the price for one item.'; return; }
   if (other && !description) { err.textContent = 'Say what it is, e.g. "Defy fridge".'; return; }
+  const old = posEditing >= 0 ? posSale.lines[posEditing] : null;
   const line = { categoryId: posEditCat ? posEditCat.id : '', categoryName: posEditCat ? posEditCat.name : 'Other', qty: qty, price: price, description: description };
+  if (old && old.itemCode) Object.assign(line, { itemCode: old.itemCode, qty: 1, description: old.description });
   if (posEditing >= 0) posSale.lines[posEditing] = line; else posSale.lines.push(line);
   document.getElementById('posLineBackdrop').hidden = true;
   posHideDone();
@@ -5965,7 +6221,7 @@ async function completePosSale() {
     uid: posUid(), receiptNo: code + '-T' + dev.till + '-' + String(seq).padStart(6, '0'), till: dev.till, time: posNowString(),
     cashierId: cashier.id, cashierName: cashier.name, method: posSale.method, total: total,
     cashReceived: cash, change: cash !== null ? posMoney(cash - total) : null, sessionId: session.id,
-    lines: posSale.lines.map((l) => ({ categoryId: l.categoryId, categoryName: l.categoryName, qty: l.qty, price: l.price, description: l.description }))
+    lines: posSale.lines.map((l) => ({ categoryId: l.categoryId, categoryName: l.categoryName, qty: l.qty, price: l.price, description: l.description, itemCode: l.itemCode || '' }))
   };
   const q = posQueue();
   q.push({ opId: 'o-' + sale.uid, type: 'sale', branch: branch, sale: sale });
@@ -6003,6 +6259,7 @@ function renderPosRecent() {
       '<span class="fin-line-side"><span class="fin-line-amt">' + rand(s.total) + '</span>' +
       '<button type="button" class="link-btn" data-reprint="' + escapeAttr(s.uid) + '">Reprint</button>' +
       (s.status !== 'Cancelled' && s.kind !== 'Refund' ? '<button type="button" class="link-btn" data-refund="' + escapeAttr(s.receiptNo) + '">Refund</button>' : '') +
+      (s.deliveryRef ? '<span class="status-tag as-info">' + escapeHtml(s.deliveryRef) + '</span>' : (posCfg.deliveries && s.status !== 'Cancelled' && s.kind !== 'Refund' ? '<button type="button" class="link-btn" data-deliver="' + escapeAttr(s.uid) + '">Delivery</button>' : '')) +
       (s.status !== 'Cancelled' ? '<button type="button" class="link-btn asset-file-rm" data-void="' + escapeAttr(s.uid) + '">' + (s.kind === 'Refund' ? 'Cancel refund' : 'Cancel sale') + '</button>' : '') +
       '</span></div>').join('') : '<p class="muted">No sales on this till yet today.</p>';
 }
@@ -6060,6 +6317,7 @@ async function posSyncNow() {
       posOffline = false;
       const done = {}; (res.done || []).forEach((id) => { done[id] = true; });
       const bad = {}; (res.rejected || []).forEach((r) => { bad[r.opId] = r.error; });
+      if ((res.warnings || []).length) showPosError('Check: ' + res.warnings.join(' '));
       if (Object.keys(bad).length) posWrite(posKey('rejected'), posRead(posKey('rejected'), []).concat(batch.filter((op) => bad[op.opId]).map((op) => ({ op: op, error: bad[op.opId] }))));
       const sentUids = {};
       batch.forEach((op) => { if (done[op.opId] && op.type === 'sale') sentUids[op.sale.uid] = true; });
@@ -6086,7 +6344,7 @@ function posReceiptHtml(sale, copy) {
   const money = (v) => 'R' + Number(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   const isRefund = sale.kind === 'Refund';
   const sign = isRefund ? '-' : '';
-  const lines = sale.lines.map((l) => '<tr><td colspan="2">' + e(l.qty + ' × ' + (l.description ? l.categoryName + ' – ' + l.description : l.categoryName)) + '</td></tr>' +
+  const lines = sale.lines.map((l) => '<tr><td colspan="2">' + e(l.qty + ' × ' + (l.description ? l.categoryName + ' – ' + l.description : l.categoryName) + (l.itemCode ? ' [' + l.itemCode + ']' : '')) + '</td></tr>' +
     '<tr><td class="sm">@ ' + money(l.price) + '</td><td class="r">' + sign + money(posMoney(l.qty * l.price)) + '</td></tr>').join('');
   return '<!doctype html><html><head><meta charset="utf-8"><title>' + e(sale.receiptNo) + '</title><style>' +
     '@page{size:' + (dev.paper === 58 ? 58 : 80) + 'mm auto;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0}' +
@@ -6383,6 +6641,7 @@ function openPosDialog(spec) {
   document.getElementById('posDialogOk').textContent = spec.ok || 'OK';
   document.getElementById('posDialogOk').disabled = false;
   document.getElementById('posDialogCancel').textContent = 'Back';
+  document.getElementById('posDialogCancel').hidden = false;
   document.getElementById('posDialogBackdrop').hidden = false;
   const first = document.querySelector('#posDialogBody input');
   if (first) setTimeout(() => first.focus(), 30);
@@ -6459,11 +6718,15 @@ async function posDialogConfirm() {
     const p = e.target.closest('[data-rcpt-print]');
     if (p) { const x = posFound[Number(p.dataset.rcptPrint)]; printPosReceipt(posServerToReceipt(x), true); return; }
     const r = e.target.closest('[data-rcpt-refund]');
-    if (r) openPosRefund(Number(r.dataset.rcptRefund));
+    if (r) { openPosRefund(Number(r.dataset.rcptRefund)); return; }
+    const dv = e.target.closest('[data-rcpt-deliver]');
+    if (dv) { el('posReceiptBackdrop').hidden = true; openPosDelivery(posServerToReceipt(posFound[Number(dv.dataset.rcptDeliver)])); }
   });
   el('posRecent').addEventListener('click', (e) => {
     const rf = e.target.closest('[data-refund]');
     if (rf) { openPosFind(rf.dataset.refund); return; }
+    const dl = e.target.closest('[data-deliver]');
+    if (dl) { const s = posRecent().filter((x) => x.uid === dl.dataset.deliver)[0]; if (s) openPosDelivery(s); return; }
     const r = e.target.closest('[data-reprint]');
     if (r) { const s = posRecent().filter((x) => x.uid === r.dataset.reprint)[0]; if (s) printPosReceipt(s, true); return; }
     const v = e.target.closest('[data-void]');
